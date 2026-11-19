@@ -1,0 +1,7 @@
+{
+  "status": "FAILED",
+  "error_class": "ENCRYPTED_PDF",
+  "error_message": "PDF file is encrypted or password-protected.",
+  "source_file": "confidential_financials_locked.pdf",
+  "detected_at": "2026-11-19T10:05:00.000000+00:00"
+}

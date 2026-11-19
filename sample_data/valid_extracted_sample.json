@@ -1,0 +1,160 @@
+{
+  "status": "SUCCESS",
+  "source_file": "invoice_sample_001.pdf",
+  "engine": "local",
+  "model_version": "local-v1",
+  "extracted_at": "2026-11-19T10:00:00.000000+00:00",
+  "page_count": 2,
+  "pages": [
+    {
+      "page_number": 1,
+      "width": 612.0,
+      "height": 792.0,
+      "is_scanned": false,
+      "lines": [
+        {
+          "text": "INVOICE #INV-2026-001",
+          "bbox": [50.0, 720.0, 220.0, 740.0],
+          "confidence": 1.0
+        },
+        {
+          "text": "Acme Industrial Supplies LLC",
+          "bbox": [50.0, 700.0, 250.0, 715.0],
+          "confidence": 1.0
+        }
+      ]
+    },
+    {
+      "page_number": 2,
+      "width": 612.0,
+      "height": 792.0,
+      "is_scanned": false,
+      "lines": [
+        {
+          "text": "Line Item Details Continued",
+          "bbox": [50.0, 720.0, 280.0, 740.0],
+          "confidence": 1.0
+        }
+      ]
+    }
+  ],
+  "elements": [
+    {
+      "page_number": 1,
+      "element_index": 0,
+      "type": "heading",
+      "text": "INVOICE #INV-2026-001",
+      "bbox": [50.0, 720.0, 220.0, 740.0],
+      "confidence": 1.0
+    },
+    {
+      "page_number": 1,
+      "element_index": 1,
+      "type": "text",
+      "text": "Acme Industrial Supplies LLC",
+      "bbox": [50.0, 700.0, 250.0, 715.0],
+      "confidence": 1.0
+    },
+    {
+      "page_number": 1,
+      "element_index": 2,
+      "type": "table",
+      "text": "Table with 2 rows, 3 columns",
+      "bbox": [50.0, 500.0, 550.0, 650.0],
+      "confidence": 1.0
+    },
+    {
+      "page_number": 2,
+      "element_index": 0,
+      "type": "text",
+      "text": "Line Item Details Continued",
+      "bbox": [50.0, 720.0, 280.0, 740.0],
+      "confidence": 1.0
+    }
+  ],
+  "tables": [
+    {
+      "table_id": "tbl_inv_page_1",
+      "start_page": 1,
+      "end_page": 2,
+      "is_cross_page": true,
+      "row_count": 3,
+      "column_count": 3,
+      "caption": "Order Breakdown",
+      "cells": [
+        {
+          "row_index": 0,
+          "column_index": 0,
+          "row_span": 1,
+          "column_span": 1,
+          "text": "Item Code"
+        },
+        {
+          "row_index": 0,
+          "column_index": 1,
+          "row_span": 1,
+          "column_span": 1,
+          "text": "Description"
+        },
+        {
+          "row_index": 0,
+          "column_index": 2,
+          "row_span": 1,
+          "column_span": 1,
+          "text": "Amount"
+        },
+        {
+          "row_index": 1,
+          "column_index": 0,
+          "row_span": 1,
+          "column_span": 1,
+          "text": "SKU-9921"
+        },
+        {
+          "row_index": 1,
+          "column_index": 1,
+          "row_span": 1,
+          "column_span": 1,
+          "text": "Centrifugal Pump Bearing"
+        },
+        {
+          "row_index": 1,
+          "column_index": 2,
+          "row_span": 1,
+          "column_span": 1,
+          "text": "$1,450.00"
+        },
+        {
+          "row_index": 2,
+          "column_index": 0,
+          "row_span": 1,
+          "column_span": 1,
+          "text": "SKU-9922"
+        },
+        {
+          "row_index": 2,
+          "column_index": 1,
+          "row_span": 1,
+          "column_span": 1,
+          "text": "Hydraulic Seal Kit"
+        },
+        {
+          "row_index": 2,
+          "column_index": 2,
+          "row_span": 1,
+          "column_span": 1,
+          "text": "$320.00"
+        }
+      ]
+    }
+  ],
+  "figures": [],
+  "extraction_metadata": {
+    "page_count_in_source": 2,
+    "pages_with_text": 2,
+    "pages_without_text": 0,
+    "tables_detected": 1,
+    "figures_detected": 0,
+    "warnings": []
+  }
+}

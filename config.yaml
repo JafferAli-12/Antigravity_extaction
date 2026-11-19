@@ -1,0 +1,28 @@
+# Configuration for Part A: Document Extraction Pipeline
+
+extraction:
+  # OCR configuration
+  enable_ocr: false                  # Set to true to enable pytesseract OCR fallback for scanned pages/images
+  tesseract_cmd: null                # Optional path to tesseract binary, e.g. "C:\\Program Files\\Tesseract-OCR\\tesseract.exe" or "/usr/bin/tesseract"
+  tesseract_lang: "eng"              # OCR language code (e.g., "eng", "fra", "deu")
+
+  # File processing constraints
+  max_file_size_mb: 500              # Skip files exceeding this threshold to prevent memory exhaustion
+  timeout_seconds: 180               # Timeout per file in seconds
+
+  # Cross-page table detection heuristics
+  cross_page_table_detection: true   # Enable heuristic detection and merging of tables spanning consecutive pages
+  cross_page_column_tolerance: 0     # Allowed column count difference (0 means exact column count match required)
+  continuation_similarity_threshold: 0.6  # Similarity score threshold to consider row 0 of next page as a continuation
+
+  # Behavior
+  overwrite: false                   # Overwrite existing JSON outputs even if source file is older
+  log_filename: "extraction_log.jsonl" # Sidecar log file written to output directory
+
+  # File extension support list
+  supported_extensions:
+    pdf: [".pdf"]
+    image: [".png", ".jpg", ".jpeg", ".tif", ".tiff"]
+    excel: [".xlsx", ".xls"]
+    docx: [".docx"]
+    json: [".json"]
