@@ -124,6 +124,7 @@ PIPELINE_CONFIG = {
     "backoff_base": 2.0,
     "batch_size": 100,
     "quarantine_on_failed_evaluation": True,
+    "reprocess_all": False,  # Set to True to re-scan landing folder and bypass checkpoints
 }
 
 # ==============================================================================
@@ -704,11 +705,13 @@ class LocalWorkspaceConnector:
             print(f"[WARN] Local path '{base_path}' does not exist. No files found.")
             return
 
-        last_key = checkpoint.get("last_key") if checkpoint else None
+        reprocess_all = self.pipeline_config.get("reprocess_all", False)
+        last_key = checkpoint.get("last_key") if (checkpoint and not reprocess_all) else None
         all_files = sorted([p for p in base_path.iterdir() if p.is_file()], key=lambda p: p.name)
 
         for p in all_files:
-            if last_key and p.name <= last_key:
+            # When checkpoint is active and not reprocessing, skip only exact processed key if tracked
+            if last_key and p.name == last_key and not reprocess_all:
                 continue
             st = p.stat()
             yield {
@@ -923,14 +926,28 @@ for item in valid_json_payloads:
         print(f"[IDEMPOTENCY] Document {d_id} is a REDELIVERY. Skipping Bronze duplicate write.")
         continue
 
+    # Extract metadata and detect engine
+    if "analyzeResult" in parsed:
+        engine = "adi"
+        ar = parsed.get("analyzeResult", {})
+        model_version = ar.get("modelId") or ar.get("apiVersion", "adi-v1")
+    elif "engine" in parsed:
+        engine = parsed.get("engine")
+        model_version = parsed.get("model_version", "local-v1")
+    elif isinstance(parsed, list) or "elements" in parsed:
+        engine = "unstructured"
+        model_version = "unstructured-v1"
+    else:
+        engine = "unknown"
+        model_version = "v1"
+
+    source_file_name = parsed.get("source_file") or Path(source).name
+
     # Register as NEW
-    reg_row = [(d_id, c_hash, now, "NEW", parsed.get("source_file"))]
+    reg_row = [(d_id, c_hash, now, "NEW", source_file_name)]
     df_new_reg = spark.createDataFrame(reg_row, schema=registry_schema)
     df_new_reg.write.format("delta").mode("append").saveAsTable(table_name("bronze_document_registry"))
 
-    # Extract metadata
-    engine = parsed.get("engine", "unknown")
-    model_version = parsed.get("model_version", "unknown")
     segment_id = parsed.get("segment_id")
     page_range = parsed.get("page_range")
 
@@ -979,17 +996,33 @@ for doc_item in bronze_ready_docs:
     # a) JSON_VALID
     checks.append((d_id, PIPELINE_RUN_ID, "JSON_VALID", "PASS", "Valid JSON object", now))
 
+    # Normalize structure for both ADI and Part A schemas
+    is_adi = "analyzeResult" in data
+    if is_adi:
+        ar = data.get("analyzeResult", {})
+        pages = ar.get("pages", [])
+        elements = ar.get("paragraphs", [])
+        tables = ar.get("tables", [])
+        page_count = len(pages)
+        source_pg_cnt = len(pages)
+        adi_req = ["pages", "paragraphs", "tables"]
+        missing = [s for s in adi_req if s not in ar]
+    else:
+        pages = data.get("pages", [])
+        elements = data.get("elements", [])
+        tables = data.get("tables", [])
+        page_count = data.get("page_count", len(pages))
+        source_pg_cnt = data.get("extraction_metadata", {}).get("page_count_in_source", page_count)
+        req_sections = EVALUATION_CONFIG["required_json_sections"]
+        missing = [s for s in req_sections if s not in data]
+
     # b) REQUIRED_SECTIONS
-    req_sections = EVALUATION_CONFIG["required_json_sections"]
-    missing = [s for s in req_sections if s not in data]
     if missing:
         checks.append((d_id, PIPELINE_RUN_ID, "REQUIRED_SECTIONS", "FAIL", f"Missing sections: {missing}", now))
     else:
         checks.append((d_id, PIPELINE_RUN_ID, "REQUIRED_SECTIONS", "PASS", "All required sections present", now))
 
     # c) PAGE_COUNT_MATCH
-    pages = data.get("pages", [])
-    page_count = data.get("page_count", len(pages))
     if page_count != len(pages):
         checks.append((d_id, PIPELINE_RUN_ID, "PAGE_COUNT_MATCH", "FAIL",
                        f"page_count ({page_count}) does not match len(pages) ({len(pages)})", now))
@@ -1004,7 +1037,6 @@ for doc_item in bronze_ready_docs:
         checks.append((d_id, PIPELINE_RUN_ID, "SEGMENT_COMPLETENESS", "PASS", f"Segment validated", now))
 
     # e) PAGE_COVERAGE
-    source_pg_cnt = data.get("extraction_metadata", {}).get("page_count_in_source")
     if source_pg_cnt and source_pg_cnt > 0:
         coverage = len(pages) / float(source_pg_cnt)
         if coverage < EVALUATION_CONFIG["min_page_coverage"]:
@@ -1014,14 +1046,15 @@ for doc_item in bronze_ready_docs:
             checks.append((d_id, PIPELINE_RUN_ID, "PAGE_COVERAGE", "PASS", f"Coverage: {coverage:.2f}", now))
 
     # f) TABLE_STRUCTURE_VALID
-    tables = data.get("tables", [])
     tbl_err = None
     for tbl in tables:
-        rc = tbl.get("row_count", 0)
-        cc = tbl.get("column_count", 0)
+        rc = tbl.get("rowCount") if tbl.get("rowCount") is not None else tbl.get("row_count", 0)
+        cc = tbl.get("columnCount") if tbl.get("columnCount") is not None else tbl.get("column_count", 0)
         for cell in tbl.get("cells", []):
-            if (cell.get("row_span", 1) > rc and rc > 0) or (cell.get("column_span", 1) > cc and cc > 0):
-                tbl_err = f"Table {tbl.get('table_id')} cell span exceeds dimensions"
+            rs = cell.get("rowSpan") if cell.get("rowSpan") is not None else cell.get("row_span", 1)
+            cs = cell.get("columnSpan") if cell.get("columnSpan") is not None else cell.get("column_span", 1)
+            if (rs > rc and rc > 0) or (cs > cc and cc > 0):
+                tbl_err = f"Table cell span ({rs}x{cs}) exceeds dimensions ({rc}x{cc})"
                 break
         if tbl_err:
             break
@@ -1031,8 +1064,7 @@ for doc_item in bronze_ready_docs:
         checks.append((d_id, PIPELINE_RUN_ID, "TABLE_STRUCTURE_VALID", "PASS", "Table cell spans conform", now))
 
     # g) NON_EMPTY_CONTENT
-    elements = data.get("elements", [])
-    empty_cnt = sum(1 for el in elements if not el.get("text", "").strip())
+    empty_cnt = sum(1 for el in elements if not (el.get("content") if el.get("content") is not None else el.get("text", "")).strip())
     if empty_cnt > 0 and empty_cnt == len(elements):
         checks.append((d_id, PIPELINE_RUN_ID, "NON_EMPTY_CONTENT", "FAIL", "All elements have empty text", now))
     else:
@@ -1115,8 +1147,160 @@ def map_local_to_silver(raw: Dict[str, Any], doc_id: str, segment_start_page: in
     return pages_rows, element_rows, table_rows, cell_rows
 
 def map_adi_to_silver(raw: Dict[str, Any], doc_id: str, segment_start_page: int = 1):
-    """Adapter for Azure Document Intelligence (ADI) format."""
-    return map_local_to_silver(raw, doc_id, segment_start_page)
+    """
+    Production adapter for Azure Document Intelligence (ADI v3.0, v3.1, v4.0 / 2024-11-30).
+    Maps analyzeResult.pages, analyzeResult.paragraphs, and analyzeResult.tables into
+    standardized Silver schemas with cross-page table reconstruction.
+    """
+    ar = raw.get("analyzeResult", raw)
+    pages_rows = []
+    element_rows = []
+    table_rows = []
+    cell_rows = []
+
+    # 1. Pages
+    for p in ar.get("pages", []):
+        pg_num = p.get("pageNumber", 1)
+        abs_pg = segment_start_page + (pg_num - 1)
+        width = float(p.get("width")) if p.get("width") is not None else None
+        height = float(p.get("height")) if p.get("height") is not None else None
+        line_cnt = len(p.get("lines", []))
+        is_scanned = False
+        pages_rows.append((
+            doc_id, abs_pg, raw.get("segment_id"), is_scanned,
+            width, height, line_cnt
+        ))
+
+    # 2. Elements (from ADI paragraphs)
+    role_mapping = {
+        "title": "heading",
+        "sectionHeading": "heading",
+        "pageHeader": "header",
+        "pageFooter": "footer",
+        "pageNumber": "page_number",
+        "footnote": "footnote",
+    }
+    paragraphs = ar.get("paragraphs", [])
+    for el_idx, para in enumerate(paragraphs):
+        content = para.get("content", "").strip()
+        role = para.get("role", "text")
+        el_type = role_mapping.get(role, "text")
+
+        br = para.get("boundingRegions", [])
+        pg_num = br[0].get("pageNumber", 1) if br else 1
+        abs_pg = segment_start_page + (pg_num - 1)
+
+        # Extract bounding polygon / bbox [min_x, min_y, max_x, max_y]
+        bbox_json = None
+        if br and "polygon" in br[0]:
+            poly = br[0]["polygon"]
+            if isinstance(poly, list) and len(poly) >= 4:
+                xs = poly[0::2]
+                ys = poly[1::2]
+                bbox_json = json.dumps([round(min(xs), 4), round(min(ys), 4), round(max(xs), 4), round(max(ys), 4)])
+
+        raw_extras = json.dumps({
+            "role": role,
+            "spans": para.get("spans", []),
+        })
+
+        element_rows.append((
+            doc_id, abs_pg, el_idx, el_type, content, bbox_json, 1.0, raw_extras
+        ))
+
+    # 3. Tables & Cross-Page Table Reconstruction
+    raw_tables = ar.get("tables", [])
+    processed_tables = []
+    skip_table_indices = set()
+
+    for t_idx in range(len(raw_tables)):
+        if t_idx in skip_table_indices:
+            continue
+
+        tbl = raw_tables[t_idx]
+        br = tbl.get("boundingRegions", [])
+        pg_nums = [b.get("pageNumber", 1) for b in br] if br else [1]
+        start_pg = min(pg_nums)
+        end_pg = max(pg_nums)
+        rc = tbl.get("rowCount", 0)
+        cc = tbl.get("columnCount", 0)
+        cells = list(tbl.get("cells", []))
+        caption = tbl.get("caption", {}).get("content") if isinstance(tbl.get("caption"), dict) else tbl.get("caption")
+        is_cross = (start_pg != end_pg)
+
+        # Lookahead: Check consecutive tables for cross-page continuation
+        lookahead_idx = t_idx + 1
+        curr_end_pg = end_pg
+        curr_rc = rc
+
+        while lookahead_idx < len(raw_tables):
+            nxt_tbl = raw_tables[lookahead_idx]
+            nxt_br = nxt_tbl.get("boundingRegions", [])
+            nxt_pgs = [b.get("pageNumber", 1) for b in nxt_br] if nxt_br else [1]
+            nxt_start_pg = min(nxt_pgs)
+            nxt_end_pg = max(nxt_pgs)
+            nxt_cc = nxt_tbl.get("columnCount", 0)
+            nxt_rc = nxt_tbl.get("rowCount", 0)
+
+            # Check consecutive page boundary and matching column count
+            if nxt_start_pg == curr_end_pg + 1 and nxt_cc == cc:
+                curr_headers = [c.get("content", "").strip().lower() for c in cells if (c.get("rowIndex") or 0) == 0]
+                nxt_headers = [c.get("content", "").strip().lower() for c in nxt_tbl.get("cells", []) if (c.get("rowIndex") or 0) == 0]
+
+                # Check if headers repeat across page continuation
+                start_r = 1 if (curr_headers and curr_headers == nxt_headers) else 0
+                row_offset = curr_rc
+
+                for c in nxt_tbl.get("cells", []):
+                    c_r = c.get("rowIndex", 0)
+                    if start_r == 1 and c_r == 0:
+                        continue  # skip repeated header
+                    adjusted_r = (c_r - start_r) + row_offset
+                    cells.append({
+                        "rowIndex": adjusted_r,
+                        "columnIndex": c.get("columnIndex", 0),
+                        "rowSpan": c.get("rowSpan", 1),
+                        "columnSpan": c.get("columnSpan", 1),
+                        "content": c.get("content", ""),
+                        "confidence": c.get("confidence", 1.0),
+                    })
+
+                added_rows = nxt_rc - start_r
+                curr_rc += added_rows
+                curr_end_pg = nxt_end_pg
+                is_cross = True
+                skip_table_indices.add(lookahead_idx)
+                lookahead_idx += 1
+            else:
+                break
+
+        t_id = f"tbl_{doc_id}_{t_idx}"
+        processed_tables.append({
+            "table_id": t_id,
+            "start_page": segment_start_page + (start_pg - 1),
+            "end_page": segment_start_page + (curr_end_pg - 1),
+            "is_cross_page": is_cross,
+            "row_count": curr_rc,
+            "column_count": cc,
+            "caption": caption,
+            "cells": cells,
+        })
+
+    for pt in processed_tables:
+        t_id = pt["table_id"]
+        table_rows.append((
+            doc_id, t_id, pt["start_page"], pt["end_page"],
+            pt["is_cross_page"], pt["row_count"], pt["column_count"],
+            pt["caption"], 1.0
+        ))
+        for c in pt["cells"]:
+            cell_rows.append((
+                doc_id, t_id, c.get("rowIndex", 0), c.get("columnIndex", 0),
+                c.get("rowSpan", 1), c.get("columnSpan", 1),
+                c.get("content", ""), float(c.get("confidence", 1.0) or 1.0)
+            ))
+
+    return pages_rows, element_rows, table_rows, cell_rows
 
 def map_unstructured_to_silver(raw: Dict[str, Any], doc_id: str, segment_start_page: int = 1):
     """Adapter for Unstructured SaaS / open-source partition format."""
