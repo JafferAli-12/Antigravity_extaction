@@ -1,11 +1,16 @@
 # Databricks notebook source
-# === CELL 1: TITLE & WORKFLOW OVERVIEW ===
+# /// script
+# [tool.databricks.environment]
+# environment_version = "6"
+# ///
 # MAGIC %md
+# MAGIC # === CELL 1: TITLE & WORKFLOW OVERVIEW ===
+# MAGIC
 # MAGIC # Document-to-JSON Local Extraction Pipeline (Part A)
-# MAGIC 
+# MAGIC
 # MAGIC This notebook converts raw documents (`.pdf`, `.docx`, `.xlsx`, `.xls`, images, `.json`)
 # MAGIC into standardized, engine-shaped JSON without requiring cloud API keys (e.g. ADI or Unstructured).
-# MAGIC 
+# MAGIC
 # MAGIC ### Features:
 # MAGIC 1. **Zero Cloud Dependencies**: Uses open-source libraries (`pdfplumber`, `PyPDF2`, `openpyxl`, `python-docx`, `Pillow`).
 # MAGIC 2. **Standardized Engine-Shaped JSON**: Mirrors output structure from production engines (pages, elements, tables, figures, metadata).
@@ -40,7 +45,8 @@ print(f"  Max File Size MB : {MAX_FILE_SIZE_MB}")
 
 # COMMAND ----------
 
-# === CELL 3: DEPENDENCY INSTALLATION ===
+# MAGIC %skip
+# MAGIC # === CELL 3: DEPENDENCY INSTALLATION ===
 # MAGIC %pip install --quiet pdfplumber pypdf PyPDF2 openpyxl python-docx Pillow pytesseract
 
 # COMMAND ----------

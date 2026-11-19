@@ -1,28 +1,33 @@
 # Databricks notebook source
-# === CELL 1: HOW TO RUN (MARKDOWN) ===
+# /// script
+# [tool.databricks.environment]
+# environment_version = "6"
+# ///
 # MAGIC %md
+# MAGIC # === CELL 1: HOW TO RUN (MARKDOWN) ===
+# MAGIC
 # MAGIC # Document Lakehouse Ingestion: Bronze -> Silver -> Gold (Part B)
-# MAGIC 
+# MAGIC
 # MAGIC This notebook implements the production-grade consumption and medallion transformation
 # MAGIC pipeline for engine-shaped JSON outputs produced by upstream extractors (e.g. Azure Document
 # MAGIC Intelligence, Unstructured, or Part A's offline local extractor).
-# MAGIC 
+# MAGIC
 # MAGIC ---
-# MAGIC 
+# MAGIC
 # MAGIC ## 1. Free Edition Setup (`ENV = "FREE_EDITION"`)
 # MAGIC By default, this notebook is configured to run out-of-the-box on **Databricks Free Edition / Community Edition**:
 # MAGIC - **No Unity Catalog**: Tables are written to the default metastore / schema.
 # MAGIC - **Local Connector Active**: Reads JSON files from workspace path `/Workspace/Users/<user>/sample_json/`.
 # MAGIC - **Zero Outbound Internet**: No external credentials or secret scopes needed.
-# MAGIC 
+# MAGIC
 # MAGIC ### Quick Start Steps in Free Edition:
 # MAGIC 1. Run Part A (`extract.py` or `databricks_part_a.py`) to generate sample engine-shaped JSON files.
 # MAGIC 2. Upload the generated JSON files to a workspace folder (e.g., `/Workspace/Users/<your-email>/sample_json/`).
 # MAGIC 3. In **Cell 2 (CONFIG)**, update `SOURCE_CONNECTORS["local"]["path"]` to match your upload directory.
 # MAGIC 4. Run the notebook from top to bottom.
-# MAGIC 
+# MAGIC
 # MAGIC ---
-# MAGIC 
+# MAGIC
 # MAGIC ## 2. Enterprise Org Workspace Setup (`ENV = "ORG_WORKSPACE"`)
 # MAGIC Moving this notebook to an enterprise Databricks environment requires **zero code restructuring**—only configuration changes.
 # MAGIC Follow the `# === CHANGE IN ORG WORKSPACE ===` markers in **Cell 2**:
@@ -31,9 +36,9 @@
 # MAGIC 3. Set `SOURCE_TYPE` to your remote storage: `"s3"`, `"blob"`, `"adls"`, or `"sftp"`
 # MAGIC 4. Fill in the credentials/secret keys under `SOURCE_CONNECTORS`
 # MAGIC 5. Update storage paths (e.g. `/Volumes/prod_data/doc_extraction/landing`)
-# MAGIC 
+# MAGIC
 # MAGIC ---
-# MAGIC 
+# MAGIC
 # MAGIC ## 3. Demo Capabilities Included
 # MAGIC The bottom cells of this notebook (**Cell 18**) provide end-to-end demonstrations of:
 # MAGIC - **Duplicate Detection**: Redelivery detection skipping duplicate JSON payloads without re-processing cost.
@@ -58,18 +63,18 @@ ENV = "FREE_EDITION"  # Options: "FREE_EDITION" | "ORG_WORKSPACE"
 SOURCE_TYPE = "local"
 
 # === CHANGE IN ORG WORKSPACE === Marker 3: Toggle Unity Catalog (False for Free Edition serverless)
-USE_UNITY_CATALOG = False
+USE_UNITY_CATALOG = True
 
 # === CHANGE IN ORG WORKSPACE === Marker 4: Unity Catalog target catalog and schema
 CATALOG_CONFIG = {
-    "catalog": "main",
-    "schema": "document_lakehouse",
+    "catalog": "ext_cat",
+    "schema": "bronze",
 }
 
 # === CHANGE IN ORG WORKSPACE === Marker 5: Storage landing and bronze paths (Workspace vs Unity Catalog Volume)
 STORAGE_CONFIG = {
-    "landing_path": "/Workspace/Users/shared/document_pipeline/landing",
-    "bronze_path": "/Workspace/Users/shared/document_pipeline/bronze",
+    "landing_path": "/Workspace/Users/jafferali7248@gmail.com/Document_Intelligence_Project/sample_documents/output",
+    "bronze_path": "/Workspace/Users/jafferali7248@gmail.com/Document_Intelligence_Project/sample_documents/bronze_path",
     "use_only_tables": True,  # If True, bypasses landing file write and streams directly into Bronze tables
 }
 
@@ -79,7 +84,7 @@ SECRET_SCOPE_NAME = "document_pipeline_scope"
 # === CHANGE IN ORG WORKSPACE === Marker 7: Source connectors configuration
 SOURCE_CONNECTORS: Dict[str, Dict[str, Any]] = {
     "local": {
-        "path": "/Workspace/Users/shared/sample_json/",
+        "path": "/Workspace/Users/jafferali7248@gmail.com/Document_Intelligence_Project/sample_documents/output",
     },
     "s3": {
         "bucket": "company-document-landing-prod",
@@ -145,7 +150,6 @@ print(f"Landing Mode     : {'Table-Direct' if STORAGE_CONFIG['use_only_tables'] 
 # COMMAND ----------
 
 # === CELL 3: DDL (DELTA TABLE DEFINITIONS) ===
-# MAGIC %python
 # Helper to qualify table names based on Unity Catalog setting
 def table_name(tbl: str) -> str:
     if USE_UNITY_CATALOG:
@@ -453,7 +457,6 @@ print("Helper functions compiled successfully.")
 # COMMAND ----------
 
 # === CELL 5: CONNECTOR S3 ===
-# MAGIC %python
 import time
 from typing import Iterator, Dict, Any, Tuple
 
@@ -538,7 +541,7 @@ class S3Connector:
 # COMMAND ----------
 
 # === CELL 6: CONNECTOR BLOB ===
-# MAGIC %python
+
 class AzureBlobConnector:
     """
     Azure Blob Storage Source Connector.
@@ -590,7 +593,7 @@ class AzureBlobConnector:
 # COMMAND ----------
 
 # === CELL 7: CONNECTOR ADLS ===
-# MAGIC %python
+
 class ADLSGen2Connector:
     """
     Azure Data Lake Storage Gen2 Connector.
@@ -635,7 +638,7 @@ class ADLSGen2Connector:
 # COMMAND ----------
 
 # === CELL 8: CONNECTOR SFTP ===
-# MAGIC %python
+
 class SFTPConnector:
     """
     SFTP Source Connector.
@@ -681,7 +684,7 @@ class SFTPConnector:
 # COMMAND ----------
 
 # === CELL 9: CONNECTOR LOCAL ===
-# MAGIC %python
+
 import os
 from pathlib import Path
 from typing import Iterator, Dict, Any, Tuple
@@ -729,7 +732,7 @@ print("All 5 source connectors compiled successfully.")
 # COMMAND ----------
 
 # === CELL 10: SOURCE DISPATCHER ===
-# MAGIC %python
+
 def get_active_checkpoint(source_type: str) -> Optional[Dict[str, Any]]:
     """Retrieves last recorded checkpoint for given source."""
     try:
@@ -817,7 +820,7 @@ print(f"Successfully landed {len(landed_objects)} objects.")
 # COMMAND ----------
 
 # === CELL 11: SOURCE-TYPE GUARD ===
-# MAGIC %python
+
 valid_json_payloads = []
 
 for obj in landed_objects:
@@ -875,7 +878,7 @@ print(f"Source-Type Guard: {len(valid_json_payloads)} passed, {len(landed_object
 # COMMAND ----------
 
 # === CELL 12: BRONZE INGESTION ===
-# MAGIC %python
+
 raw_engine_schema = StructType([
     StructField("doc_id", StringType(), False),
     StructField("content_hash", StringType(), False),
@@ -955,7 +958,7 @@ print(f"Bronze Ingestion completed: {len(new_bronze_rows)} new documents written
 # COMMAND ----------
 
 # === CELL 13: EVALUATION (COMPLETENESS + QUALITY) ===
-# MAGIC %python
+
 eval_schema = StructType([
     StructField("doc_id", StringType(), False),
     StructField("run_id", StringType(), False),
@@ -1062,7 +1065,7 @@ print(f"Evaluation complete: {len(evaluated_docs)} documents passed quality chec
 # COMMAND ----------
 
 # === CELL 14: SILVER PARSING ===
-# MAGIC %python
+
 # MAPPING ADAPTERS: Standardize raw engine JSON outputs into unified Silver rows
 
 def map_local_to_silver(raw: Dict[str, Any], doc_id: str, segment_start_page: int = 1):
@@ -1249,7 +1252,7 @@ print("Silver transformations and MERGE executions completed.")
 # COMMAND ----------
 
 # === CELL 15: GOLD ===
-# MAGIC %python
+
 # Gold Table 1: gold_extracted_table_view (Flat projection of tables and cells)
 spark.sql(f"""
 MERGE INTO {table_name("gold_extracted_table_view")} g
@@ -1311,7 +1314,7 @@ print("Gold layer projections refreshed successfully.")
 # COMMAND ----------
 
 # === CELL 16: RECONCILIATION ===
-# MAGIC %python
+
 # Layer-by-layer count reconciliation audit
 cnt_landed = len(landed_objects)
 cnt_bronze_distinct = spark.table(table_name("bronze_raw_engine_output")).select("doc_id").distinct().count()
@@ -1351,7 +1354,7 @@ else:
 # COMMAND ----------
 
 # === CELL 17: OBSERVABILITY QUERIES ===
-# MAGIC %python
+
 print("--- 1. Document Counts by Pipeline Stage and Status ---")
 display(spark.sql(f"""
 SELECT stage, status, count(1) as event_count
@@ -1362,7 +1365,7 @@ ORDER BY stage, status
 
 # COMMAND ----------
 
-# MAGIC %python
+
 print("--- 2. Quarantined Documents and Root Causes ---")
 display(spark.sql(f"""
 SELECT reason, count(1) as quarantined_count, min(quarantined_at) as first_seen, max(quarantined_at) as last_seen
@@ -1373,7 +1376,7 @@ ORDER BY quarantined_count DESC
 
 # COMMAND ----------
 
-# MAGIC %python
+
 print("--- 3. Evaluation Check Pass/Fail Rates ---")
 display(spark.sql(f"""
 SELECT check_name, status, count(1) as count
@@ -1384,7 +1387,7 @@ ORDER BY check_name, status
 
 # COMMAND ----------
 
-# MAGIC %python
+
 print("--- 4. Full Audit Trail for Recent Document ---")
 sample_doc = spark.table(table_name("gold_document_summary")).select("doc_id").first()
 if sample_doc:
@@ -1399,7 +1402,7 @@ if sample_doc:
 # COMMAND ----------
 
 # === CELL 18: DEMO CELLS ===
-# MAGIC %python
+
 # DEMO 1: DUPLICATE DETECTION (REDELIVERY)
 print("=== DEMO 1: Duplicate Detection ===")
 demo_json = json.dumps({"source_file": "demo_dup.pdf", "engine": "local", "model_version": "v1", "pages": [], "elements": [], "tables": []})
@@ -1419,7 +1422,7 @@ if existing > 0:
 
 # COMMAND ----------
 
-# MAGIC %python
+
 # DEMO 2: QUARANTINE HANDLING FOR CORRUPT & RAW FILES
 print("=== DEMO 2: Quarantine Handling ===")
 # i. Raw PDF slipped through
@@ -1434,7 +1437,7 @@ display(spark.table(table_name("bronze_quarantine")).filter("source LIKE 's3://l
 
 # COMMAND ----------
 
-# MAGIC %python
+
 # DEMO 3: EVALUATION QUALITY GATE FAILURE
 print("=== DEMO 3: Evaluation Gate Failure ===")
 bad_doc_id = "eval_fail_demo_1"
@@ -1448,7 +1451,7 @@ print(f"Document {bad_doc_id} successfully quarantined due to evaluation gate fa
 
 # COMMAND ----------
 
-# MAGIC %python
+
 # DEMO 4: RECONCILIATION GAP DETECTION
 print("=== DEMO 4: Reconciliation Gap Detection ===")
 # Simulate a missing silver write
@@ -1464,13 +1467,14 @@ display(spark.table(table_name("bronze_pipeline_events")).filter("stage = 'RECON
 
 # COMMAND ----------
 
-# === CELL 19: PORTABILITY CHECKLIST (MARKDOWN) ===
 # MAGIC %md
+# MAGIC # === CELL 19: PORTABILITY CHECKLIST (MARKDOWN) ===
+# MAGIC
 # MAGIC ## Portability Checklist: Transitioning from Free Edition to Org Workspace
-# MAGIC 
+# MAGIC
 # MAGIC When promoting this notebook to an enterprise Databricks workspace (e.g. AWS E2, Azure Databricks, GCP),
 # MAGIC execute the following checklist in **Cell 2 (CONFIG)**:
-# MAGIC 
+# MAGIC
 # MAGIC - [ ] **1. Set Environment**:
 # MAGIC   ```python
 # MAGIC   ENV = "ORG_WORKSPACE"
