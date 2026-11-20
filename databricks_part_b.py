@@ -705,14 +705,9 @@ class LocalWorkspaceConnector:
             print(f"[WARN] Local path '{base_path}' does not exist. No files found.")
             return
 
-        reprocess_all = self.pipeline_config.get("reprocess_all", False)
-        last_key = checkpoint.get("last_key") if (checkpoint and not reprocess_all) else None
         all_files = sorted([p for p in base_path.iterdir() if p.is_file()], key=lambda p: p.name)
 
         for p in all_files:
-            # When checkpoint is active and not reprocessing, skip only exact processed key if tracked
-            if last_key and p.name == last_key and not reprocess_all:
-                continue
             st = p.stat()
             yield {
                 "key": p.name,
@@ -919,14 +914,11 @@ for item in valid_json_payloads:
     # Check bronze_document_registry for idempotency / redelivery
     df_reg = spark.table(table_name("bronze_document_registry")).filter(f"content_hash = '{c_hash}'")
     is_redelivery = (df_reg.count() > 0)
-    reprocess_all = PIPELINE_CONFIG.get("reprocess_all", False)
 
-    if is_redelivery and not reprocess_all:
-        # Redelivery: duplicate content already ingested, skip downstream cost
+    if is_redelivery:
         log_event(run_id=PIPELINE_RUN_ID, doc_id=d_id, stage="BRONZE_INGESTION",
                   status="REDELIVERY", metadata={"source": source, "content_hash": c_hash})
-        print(f"[IDEMPOTENCY] Document {d_id} is a REDELIVERY. Skipping Bronze duplicate write.")
-        continue
+        print(f"[IDEMPOTENCY] Document {d_id} is a REDELIVERY. Skipping Bronze raw write, forwarding to Silver/Gold.")
 
     # Extract metadata and detect engine
     if "analyzeResult" in parsed:
