@@ -1456,9 +1456,18 @@ USING (
         c.column_span,
         c.text,
         c.confidence
-    FROM {table_name("silver_table_cells")} c
-    INNER JOIN {table_name("silver_tables")} t
-        ON c.doc_id = t.doc_id AND c.table_id = t.table_id
+    FROM (
+        SELECT doc_id, table_id, row_index, column_index, row_span, column_span, text, confidence,
+               ROW_NUMBER() OVER (PARTITION BY doc_id, table_id, row_index, column_index ORDER BY confidence DESC) as rn
+        FROM {table_name("silver_table_cells")}
+    ) c
+    INNER JOIN (
+        SELECT doc_id, table_id, start_page, end_page,
+               ROW_NUMBER() OVER (PARTITION BY doc_id, table_id ORDER BY start_page ASC) as rn
+        FROM {table_name("silver_tables")}
+    ) t
+        ON c.doc_id = t.doc_id AND c.table_id = t.table_id AND t.rn = 1
+    WHERE c.rn = 1
 ) s
 ON g.doc_id = s.doc_id AND g.table_id = s.table_id AND g.row_index = s.row_index AND g.column_index = s.column_index
 WHEN MATCHED THEN UPDATE SET *
@@ -1479,7 +1488,11 @@ USING (
         CASE WHEN q.doc_id IS NOT NULL THEN 'FAILED' ELSE 'PASSED' END as evaluation_status,
         'COMPLETED' as processing_status,
         current_timestamp() as last_updated
-    FROM {table_name("bronze_raw_engine_output")} b
+    FROM (
+        SELECT doc_id, engine, model_version,
+               ROW_NUMBER() OVER (PARTITION BY doc_id ORDER BY ingested_at DESC) as rn
+        FROM {table_name("bronze_raw_engine_output")}
+    ) b
     LEFT JOIN (
         SELECT doc_id, count(1) as page_cnt, sum(case when is_scanned then 1 else 0 end) as scanned_cnt
         FROM {table_name("silver_pages")}
@@ -1490,7 +1503,11 @@ USING (
         FROM {table_name("silver_tables")}
         GROUP BY doc_id
     ) t ON b.doc_id = t.doc_id
-    LEFT JOIN {table_name("bronze_quarantine")} q ON b.doc_id = q.doc_id
+    LEFT JOIN (
+        SELECT DISTINCT doc_id
+        FROM {table_name("bronze_quarantine")}
+    ) q ON b.doc_id = q.doc_id
+    WHERE b.rn = 1
 ) s
 ON g.doc_id = s.doc_id
 WHEN MATCHED THEN UPDATE SET *
