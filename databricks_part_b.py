@@ -918,9 +918,11 @@ for item in valid_json_payloads:
 
     # Check bronze_document_registry for idempotency / redelivery
     df_reg = spark.table(table_name("bronze_document_registry")).filter(f"content_hash = '{c_hash}'")
-    
-    if df_reg.count() > 0:
-        # Redelivery: duplicate content already ingested
+    is_redelivery = (df_reg.count() > 0)
+    reprocess_all = PIPELINE_CONFIG.get("reprocess_all", False)
+
+    if is_redelivery and not reprocess_all:
+        # Redelivery: duplicate content already ingested, skip downstream cost
         log_event(run_id=PIPELINE_RUN_ID, doc_id=d_id, stage="BRONZE_INGESTION",
                   status="REDELIVERY", metadata={"source": source, "content_hash": c_hash})
         print(f"[IDEMPOTENCY] Document {d_id} is a REDELIVERY. Skipping Bronze duplicate write.")
@@ -942,29 +944,30 @@ for item in valid_json_payloads:
         model_version = "v1"
 
     source_file_name = parsed.get("source_file") or Path(source).name
-
-    # Register as NEW
-    reg_row = [(d_id, c_hash, now, "NEW", source_file_name)]
-    df_new_reg = spark.createDataFrame(reg_row, schema=registry_schema)
-    df_new_reg.write.format("delta").mode("append").saveAsTable(table_name("bronze_document_registry"))
-
     segment_id = parsed.get("segment_id")
     page_range = parsed.get("page_range")
 
-    new_bronze_rows.append((
-        d_id, c_hash, source, engine, model_version,
-        segment_id, page_range, raw_str, now, PIPELINE_RUN_ID
-    ))
+    if not is_redelivery:
+        # Register as NEW
+        reg_row = [(d_id, c_hash, now, "NEW", source_file_name)]
+        df_new_reg = spark.createDataFrame(reg_row, schema=registry_schema)
+        df_new_reg.write.format("delta").mode("append").saveAsTable(table_name("bronze_document_registry"))
 
+        new_bronze_rows.append((
+            d_id, c_hash, source, engine, model_version,
+            segment_id, page_range, raw_str, now, PIPELINE_RUN_ID
+        ))
+        log_event(run_id=PIPELINE_RUN_ID, doc_id=d_id, stage="BRONZE_INGESTION",
+                  status="RAW_STORED", metadata={"engine": engine, "model_version": model_version})
+
+    # Add to bronze_ready_docs so Evaluation, Silver parsing, and Gold update cleanly
     bronze_ready_docs.append({
         "doc_id": d_id,
         "content_hash": c_hash,
         "source": source,
         "parsed_json": parsed,
+        "engine": engine,
     })
-
-    log_event(run_id=PIPELINE_RUN_ID, doc_id=d_id, stage="BRONZE_INGESTION",
-              status="RAW_STORED", metadata={"engine": engine, "model_version": model_version})
 
 if new_bronze_rows:
     df_bronze = spark.createDataFrame(new_bronze_rows, schema=raw_engine_schema)
@@ -1356,7 +1359,16 @@ all_silver_pages, all_silver_elements, all_silver_tables, all_silver_cells = [],
 for doc_item in evaluated_docs:
     d_id = doc_item["doc_id"]
     data = doc_item["parsed_json"]
-    engine = data.get("engine", "local")
+    
+    # Detect engine
+    if "analyzeResult" in data or doc_item.get("engine") == "adi":
+        engine = "adi"
+    elif "engine" in data:
+        engine = data.get("engine")
+    elif isinstance(data, list) or "elements" in data:
+        engine = "unstructured"
+    else:
+        engine = "local"
 
     try:
         if engine == "adi":
