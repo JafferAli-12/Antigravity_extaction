@@ -465,8 +465,18 @@ with open(log_file_path, "a", encoding="utf-8") as log_f:
         start_t = time.time()
         out_f = out_path / f"{f.stem}.json"
         
-        # Idempotency
+        # Idempotency: only skip if previous output was a SUCCESS and up-to-date
+        should_skip = False
         if not OVERWRITE and out_f.exists() and f.stat().st_mtime < out_f.stat().st_mtime:
+            try:
+                with open(out_f, "r", encoding="utf-8") as jf_prev:
+                    prev_json = json.load(jf_prev)
+                if prev_json.get("status") == "SUCCESS":
+                    should_skip = True
+            except Exception:
+                should_skip = False
+
+        if should_skip:
             continue
             
         # Size checks

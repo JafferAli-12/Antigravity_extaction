@@ -183,6 +183,20 @@ class TestDocumentExtractor(unittest.TestCase):
         second_entry = process_single_file(valid_json_file, self.output_dir, self.config, overwrite=False)
         self.assertEqual(second_entry["status"], "SKIPPED")
 
+    def test_retry_on_previous_failed_status(self):
+        doc_file = self.input_dir / "retry_doc.json"
+        with open(doc_file, "w", encoding="utf-8") as f:
+            json.dump({"status": "SUCCESS"}, f)
+
+        # Simulate a previous run that generated a FAILED json in output
+        out_file = self.output_dir / "retry_doc.json"
+        with open(out_file, "w", encoding="utf-8") as f:
+            json.dump({"status": "FAILED", "error_class": "CORRUPT_FILE"}, f)
+
+        # Process without overwrite: it must NOT skip, it must re-extract!
+        entry = process_single_file(doc_file, self.output_dir, self.config, overwrite=False)
+        self.assertEqual(entry["status"], "SUCCESS")
+
 
 if __name__ == "__main__":
     unittest.main()
