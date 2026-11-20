@@ -1181,40 +1181,56 @@ def map_local_to_silver(raw: Dict[str, Any], doc_id: str, segment_start_page: in
 
     # Pages
     for p in raw.get("pages", []):
-        pg_num = p.get("page_number", 1)
+        pg_num = p.get("page_number") or p.get("page_no") or 1
         abs_pg = segment_start_page + (pg_num - 1)
+        seg_id = str(raw.get("segment_id")) if raw.get("segment_id") is not None else None
         pages_rows.append((
-            doc_id, abs_pg, raw.get("segment_id"), p.get("is_scanned", False),
+            str(doc_id), int(abs_pg), seg_id, bool(p.get("is_scanned", False)),
             float(p.get("width")) if p.get("width") is not None else None,
             float(p.get("height")) if p.get("height") is not None else None,
-            len(p.get("lines", []))
+            int(len(p.get("lines", [])))
         ))
 
     # Elements
-    for el in raw.get("elements", []):
-        pg_num = el.get("page_number", 1)
+    for el_idx, el in enumerate(raw.get("elements", [])):
+        pg_num = el.get("page_number") or el.get("page_no") or 1
         abs_pg = segment_start_page + (pg_num - 1)
+        el_type = str(el.get("type") or el.get("role") or "text")
+        el_text = str(el.get("text") if el.get("text") is not None else (el.get("content") or ""))
+        bbox_str = json.dumps(el.get("bbox")) if el.get("bbox") is not None else None
+        conf = float(el.get("confidence", 1.0)) if el.get("confidence") is not None else 1.0
         element_rows.append((
-            doc_id, abs_pg, el.get("element_index", 0),
-            el.get("type", "text"), el.get("text", ""),
-            json.dumps(el.get("bbox")) if el.get("bbox") else None,
-            float(el.get("confidence", 1.0)) if el.get("confidence") is not None else 1.0,
+            str(doc_id), int(abs_pg), int(el.get("element_index", el_idx)),
+            el_type, el_text,
+            bbox_str, conf,
             json.dumps({})
         ))
 
     # Tables & Cells
-    for tbl in raw.get("tables", []):
-        t_id = tbl.get("table_id")
+    for t_idx, tbl in enumerate(raw.get("tables", [])):
+        t_id = str(tbl.get("table_id") or tbl.get("logical_table_id") or f"tbl_{doc_id}_{t_idx}")
+        start_p = tbl.get("start_page") or tbl.get("page_start") or 1
+        end_p = tbl.get("end_page") or tbl.get("page_end") or start_p
+        r_cnt = tbl.get("row_count") or tbl.get("total_rows") or 0
+        c_cnt = tbl.get("column_count") or tbl.get("col_count") or tbl.get("total_cols") or 0
+        cap = str(tbl.get("caption") or tbl.get("title") or "") if (tbl.get("caption") or tbl.get("title")) is not None else None
+
         table_rows.append((
-            doc_id, t_id, tbl.get("start_page", 1), tbl.get("end_page", 1),
-            tbl.get("is_cross_page", False), tbl.get("row_count", 0), tbl.get("column_count", 0),
-            tbl.get("caption"), 1.0
+            str(doc_id), t_id, int(start_p), int(end_p),
+            bool(tbl.get("is_cross_page", False)), int(r_cnt), int(c_cnt),
+            cap, 1.0
         ))
-        for cell in tbl.get("cells", []):
+        for cell in (tbl.get("cells") or tbl.get("combined_cells") or []):
+            r_i = cell.get("row_index") if cell.get("row_index") is not None else cell.get("row_no", 0)
+            c_i = cell.get("column_index") if cell.get("column_index") is not None else cell.get("col_no", 0)
+            r_s = cell.get("row_span") if cell.get("row_span") is not None else cell.get("row_span", 1)
+            c_s = cell.get("column_span") if cell.get("column_span") is not None else cell.get("col_span", 1)
+            txt = str(cell.get("text") if cell.get("text") is not None else (cell.get("clean_text") or cell.get("content") or ""))
+            conf = float(cell.get("confidence", 1.0)) if cell.get("confidence") is not None else 1.0
             cell_rows.append((
-                doc_id, t_id, cell.get("row_index", 0), cell.get("column_index", 0),
-                cell.get("row_span", 1), cell.get("column_span", 1),
-                cell.get("text", ""), 1.0
+                str(doc_id), t_id, int(r_i or 0), int(c_i or 0),
+                int(r_s or 1), int(c_s or 1),
+                txt, conf
             ))
 
     return pages_rows, element_rows, table_rows, cell_rows
@@ -1367,10 +1383,17 @@ def map_adi_to_silver(raw: Dict[str, Any], doc_id: str, segment_start_page: int 
             pt["caption"], 1.0
         ))
         for c in pt["cells"]:
+            c_r = c.get("rowIndex") if c.get("rowIndex") is not None else c.get("row_index", 0)
+            c_c = c.get("columnIndex") if c.get("columnIndex") is not None else c.get("column_index", 0)
+            c_rs = c.get("rowSpan") if c.get("rowSpan") is not None else c.get("row_span", 1)
+            c_cs = c.get("columnSpan") if c.get("columnSpan") is not None else c.get("column_span", 1)
+            c_txt = str(c.get("content") if c.get("content") is not None else (c.get("text") or ""))
+            c_conf = float(c.get("confidence", 1.0) or 1.0) if c.get("confidence") is not None else 1.0
+
             cell_rows.append((
-                doc_id, t_id, c.get("rowIndex", 0), c.get("columnIndex", 0),
-                c.get("rowSpan", 1), c.get("columnSpan", 1),
-                c.get("content", ""), float(c.get("confidence", 1.0) or 1.0)
+                str(doc_id), str(t_id), int(c_r or 0), int(c_c or 0),
+                int(c_rs or 1), int(c_cs or 1),
+                c_txt, c_conf
             ))
 
     return pages_rows, element_rows, table_rows, cell_rows
@@ -1379,10 +1402,10 @@ def map_unstructured_to_silver(raw: Dict[str, Any], doc_id: str, segment_start_p
     """Adapter for Unstructured SaaS / open-source partition format."""
     return map_local_to_silver(raw, doc_id, segment_start_page)
 
-# Schemas for Silver tables
+# Schemas for Silver tables (all fields nullable=True except doc_id for safety)
 schema_pages = StructType([
     StructField("doc_id", StringType(), False),
-    StructField("absolute_page", IntegerType(), False),
+    StructField("absolute_page", IntegerType(), True),
     StructField("segment_id", StringType(), True),
     StructField("is_scanned", BooleanType(), True),
     StructField("width", DoubleType(), True),
@@ -1392,8 +1415,8 @@ schema_pages = StructType([
 
 schema_elements_staging = StructType([
     StructField("doc_id", StringType(), False),
-    StructField("absolute_page", IntegerType(), False),
-    StructField("element_index", IntegerType(), False),
+    StructField("absolute_page", IntegerType(), True),
+    StructField("element_index", IntegerType(), True),
     StructField("type", StringType(), True),
     StructField("text", StringType(), True),
     StructField("bbox", StringType(), True),
@@ -1403,7 +1426,7 @@ schema_elements_staging = StructType([
 
 schema_tables = StructType([
     StructField("doc_id", StringType(), False),
-    StructField("table_id", StringType(), False),
+    StructField("table_id", StringType(), True),
     StructField("start_page", IntegerType(), True),
     StructField("end_page", IntegerType(), True),
     StructField("is_cross_page", BooleanType(), True),
@@ -1415,9 +1438,9 @@ schema_tables = StructType([
 
 schema_cells = StructType([
     StructField("doc_id", StringType(), False),
-    StructField("table_id", StringType(), False),
-    StructField("row_index", IntegerType(), False),
-    StructField("column_index", IntegerType(), False),
+    StructField("table_id", StringType(), True),
+    StructField("row_index", IntegerType(), True),
+    StructField("column_index", IntegerType(), True),
     StructField("row_span", IntegerType(), True),
     StructField("column_span", IntegerType(), True),
     StructField("text", StringType(), True),
