@@ -356,6 +356,66 @@ def extract_docx_nb(file_path: Path) -> Dict[str, Any]:
         }
     }
 
+def extract_image_nb(file_path: Path, enable_ocr: bool) -> Dict[str, Any]:
+    source_name = file_path.name
+    warnings = []
+    try:
+        from PIL import Image
+        with Image.open(file_path) as img:
+            width, height = img.size
+    except Exception as e:
+        return make_failed_json(source_name, "CORRUPT_FILE", f"Invalid or corrupt image: {e}")
+
+    lines, elements = [], []
+    has_text = False
+
+    if enable_ocr:
+        try:
+            import pytesseract
+            with Image.open(file_path) as img:
+                ocr_data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
+            n_boxes = len(ocr_data["text"])
+            el_idx = 0
+            for i in range(n_boxes):
+                txt = ocr_data["text"][i].strip()
+                if txt:
+                    has_text = True
+                    x = float(ocr_data["left"][i])
+                    y = float(ocr_data["top"][i])
+                    w = float(ocr_data["width"][i])
+                    h = float(ocr_data["height"][i])
+                    conf = float(ocr_data["conf"][i]) / 100.0 if ocr_data["conf"][i] >= 0 else None
+                    bbox = [round(x, 2), round(y, 2), round(x + w, 2), round(y + h, 2)]
+                    lines.append({"text": txt, "bbox": bbox, "confidence": conf})
+                    elements.append({
+                        "page_number": 1, "element_index": el_idx, "type": "text",
+                        "text": txt, "bbox": bbox, "confidence": conf
+                    })
+                    el_idx += 1
+        except Exception as ocr_err:
+            warnings.append(f"Image OCR failed: {ocr_err}")
+
+    if not elements:
+        elements.append({
+            "page_number": 1, "element_index": 0, "type": "figure",
+            "text": "Image file (OCR unavailable or disabled)",
+            "bbox": [0.0, 0.0, float(width), float(height)], "confidence": 1.0
+        })
+        warnings.append("OCR was unavailable or disabled; returned image metadata only.")
+
+    return {
+        "status": "SUCCESS", "source_file": source_name, "engine": "local", "model_version": "local-v1",
+        "extracted_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "page_count": 1,
+        "pages": [{"page_number": 1, "width": float(width), "height": float(height), "is_scanned": True, "lines": lines}],
+        "elements": elements, "tables": [],
+        "figures": [{"page_number": 1, "bbox": [0.0, 0.0, float(width), float(height)], "caption": None, "image_ref": source_name}],
+        "extraction_metadata": {
+            "page_count_in_source": 1, "pages_with_text": 1 if has_text else 0, "pages_without_text": 0 if has_text else 1,
+            "tables_detected": 0, "figures_detected": 1, "warnings": warnings
+        }
+    }
+
 # COMMAND ----------
 
 # === CELL 5: BATCH PROCESSING RUNNER ===
@@ -392,6 +452,8 @@ with open(log_file_path, "a", encoding="utf-8") as log_f:
                 res = extract_excel_nb(f)
             elif ext == ".docx":
                 res = extract_docx_nb(f)
+            elif ext in [".png", ".jpg", ".jpeg", ".tif", ".tiff"]:
+                res = extract_image_nb(f, ENABLE_OCR)
             elif ext == ".json":
                 try:
                     with open(f, "r", encoding="utf-8") as jf:
