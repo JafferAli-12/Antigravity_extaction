@@ -27,11 +27,16 @@ flowchart LR
 
 | File | Purpose | Environment |
 |---|---|---|
+| [`chunker.py`](file:///c:/Users/jaffe/OneDrive/Desktop/antigravity_extraction_proj/chunker.py) | Intelligent, table-aware document pre-processor & chunker (up to 10,000+ pages) | Local / CLI / Server |
+| [`table_stitcher.py`](file:///c:/Users/jaffe/OneDrive/Desktop/antigravity_extraction_proj/table_stitcher.py) | 7-point confidence metric multi-page table reconstructor & deduplicator | Local / Module |
+| [`aggregator.py`](file:///c:/Users/jaffe/OneDrive/Desktop/antigravity_extraction_proj/aggregator.py) | Extraction aggregation, 1..N page reconciliation, and lab domain projection | Local / Module |
 | [`extract.py`](file:///c:/Users/jaffe/OneDrive/Desktop/antigravity_extraction_proj/extract.py) | Standalone CLI extractor converting documents to engine-shaped JSON | Local / CLI / Server |
 | [`requirements.txt`](file:///c:/Users/jaffe/OneDrive/Desktop/antigravity_extraction_proj/requirements.txt) | Python dependencies for extraction and cloud connectors | pip / virtualenv |
 | [`config.yaml`](file:///c:/Users/jaffe/OneDrive/Desktop/antigravity_extraction_proj/config.yaml) | Configuration options (OCR toggle, thresholds, limits) | Local / CLI |
 | [`databricks_part_a.py`](file:///c:/Users/jaffe/OneDrive/Desktop/antigravity_extraction_proj/databricks_part_a.py) | Databricks notebook version for document extraction | Databricks (Free / Org) |
 | [`databricks_part_b.py`](file:///c:/Users/jaffe/OneDrive/Desktop/antigravity_extraction_proj/databricks_part_b.py) | Full Medallion Lakehouse Databricks Notebook (Cells 1-19) | Databricks (Free / Org) |
+| [`test_scale_pipeline.py`](file:///c:/Users/jaffe/OneDrive/Desktop/antigravity_extraction_proj/test_scale_pipeline.py) | 15 comprehensive automated test suites for scale (10 to 10,000 pages) | Local / pytest |
+| [`test_adi_pipeline.py`](file:///c:/Users/jaffe/OneDrive/Desktop/antigravity_extraction_proj/test_adi_pipeline.py) | Verification against real Azure Document Intelligence payloads | Local / pytest |
 | [`test_extract.py`](file:///c:/Users/jaffe/OneDrive/Desktop/antigravity_extraction_proj/test_extract.py) | Unit test suite for extraction logic and edge cases | Local / pytest |
 | [`sample_data/`](file:///c:/Users/jaffe/OneDrive/Desktop/antigravity_extraction_proj/sample_data) | Test document payloads and error test cases | Test datasets |
 

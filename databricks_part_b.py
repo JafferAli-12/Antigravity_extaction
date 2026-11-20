@@ -327,6 +327,84 @@ CREATE TABLE IF NOT EXISTS {table_name("gold_document_summary")} (
 ) USING DELTA
 """)
 
+# 13. bronze_document_chunks (Tracking chunks for large-scale documents)
+spark.sql(f"""
+CREATE TABLE IF NOT EXISTS {table_name("bronze_document_chunks")} (
+    chunk_id STRING,
+    doc_id STRING,
+    sequence INT,
+    page_start INT,
+    page_end INT,
+    chunk_type STRING,
+    status STRING,
+    retry_count INT,
+    checksum STRING,
+    created_at TIMESTAMP
+) USING DELTA
+""")
+
+# 14. silver_logical_tables (Unified multi-page / cross-chunk stitched tables)
+spark.sql(f"""
+CREATE TABLE IF NOT EXISTS {table_name("silver_logical_tables")} (
+    logical_table_id STRING,
+    doc_id STRING,
+    title STRING,
+    page_start INT,
+    page_end INT,
+    total_rows INT,
+    total_cols INT,
+    is_cross_page BOOLEAN,
+    stitch_confidence DOUBLE
+) USING DELTA
+""")
+
+# 15. silver_table_fragments (Physical page-level table fragments)
+spark.sql(f"""
+CREATE TABLE IF NOT EXISTS {table_name("silver_table_fragments")} (
+    table_id STRING,
+    doc_id STRING,
+    page_no INT,
+    logical_table_id STRING,
+    fragment_order INT,
+    n_rows INT,
+    n_cols INT,
+    caption STRING
+) USING DELTA
+""")
+
+# 16. gold_lab_results (Curated clinical laboratory results)
+spark.sql(f"""
+CREATE TABLE IF NOT EXISTS {table_name("gold_lab_results")} (
+    result_id STRING,
+    sample_id STRING,
+    doc_id STRING,
+    source_cell_id STRING,
+    analyte STRING,
+    value_raw STRING,
+    value_num DOUBLE,
+    qualifier STRING,
+    unit STRING,
+    reference_range STRING,
+    flag STRING
+) USING DELTA
+""")
+
+# 17. gold_review_issues (Data quality validation & human-in-the-loop audit trail)
+spark.sql(f"""
+CREATE TABLE IF NOT EXISTS {table_name("gold_review_issues")} (
+    issue_id STRING,
+    doc_id STRING,
+    cell_id STRING,
+    logical_table_id STRING,
+    issue_type STRING,
+    status STRING,
+    severity STRING,
+    raw_evidence STRING,
+    resolved_value STRING,
+    created_at TIMESTAMP
+) USING DELTA
+""")
+
 print("All Delta tables verified or created successfully.")
 
 # COMMAND ----------
