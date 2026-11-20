@@ -1,28 +1,33 @@
 # Databricks notebook source
-# === CELL 1: HOW TO RUN (MARKDOWN) ===
+# /// script
+# [tool.databricks.environment]
+# environment_version = "6"
+# ///
 # MAGIC %md
+# MAGIC # === CELL 1: HOW TO RUN (MARKDOWN) ===
+# MAGIC
 # MAGIC # Document Lakehouse Ingestion: Bronze -> Silver -> Gold (Part B)
-# MAGIC 
+# MAGIC
 # MAGIC This notebook implements the production-grade consumption and medallion transformation
 # MAGIC pipeline for engine-shaped JSON outputs produced by upstream extractors (e.g. Azure Document
 # MAGIC Intelligence, Unstructured, or Part A's offline local extractor).
-# MAGIC 
+# MAGIC
 # MAGIC ---
-# MAGIC 
+# MAGIC
 # MAGIC ## 1. Free Edition Setup (`ENV = "FREE_EDITION"`)
 # MAGIC By default, this notebook is configured to run out-of-the-box on **Databricks Free Edition / Community Edition**:
 # MAGIC - **No Unity Catalog**: Tables are written to the default metastore / schema.
 # MAGIC - **Local Connector Active**: Reads JSON files from workspace path `/Workspace/Users/<user>/sample_json/`.
 # MAGIC - **Zero Outbound Internet**: No external credentials or secret scopes needed.
-# MAGIC 
+# MAGIC
 # MAGIC ### Quick Start Steps in Free Edition:
 # MAGIC 1. Run Part A (`extract.py` or `databricks_part_a.py`) to generate sample engine-shaped JSON files.
 # MAGIC 2. Upload the generated JSON files to a workspace folder (e.g., `/Workspace/Users/<your-email>/sample_json/`).
 # MAGIC 3. In **Cell 2 (CONFIG)**, update `SOURCE_CONNECTORS["local"]["path"]` to match your upload directory.
 # MAGIC 4. Run the notebook from top to bottom.
-# MAGIC 
+# MAGIC
 # MAGIC ---
-# MAGIC 
+# MAGIC
 # MAGIC ## 2. Enterprise Org Workspace Setup (`ENV = "ORG_WORKSPACE"`)
 # MAGIC Moving this notebook to an enterprise Databricks environment requires **zero code restructuring**—only configuration changes.
 # MAGIC Follow the `# === CHANGE IN ORG WORKSPACE ===` markers in **Cell 2**:
@@ -31,9 +36,9 @@
 # MAGIC 3. Set `SOURCE_TYPE` to your remote storage: `"s3"`, `"blob"`, `"adls"`, or `"sftp"`
 # MAGIC 4. Fill in the credentials/secret keys under `SOURCE_CONNECTORS`
 # MAGIC 5. Update storage paths (e.g. `/Volumes/prod_data/doc_extraction/landing`)
-# MAGIC 
+# MAGIC
 # MAGIC ---
-# MAGIC 
+# MAGIC
 # MAGIC ## 3. Demo Capabilities Included
 # MAGIC The bottom cells of this notebook (**Cell 18**) provide end-to-end demonstrations of:
 # MAGIC - **Duplicate Detection**: Redelivery detection skipping duplicate JSON payloads without re-processing cost.
@@ -58,18 +63,18 @@ ENV = "FREE_EDITION"  # Options: "FREE_EDITION" | "ORG_WORKSPACE"
 SOURCE_TYPE = "local"
 
 # === CHANGE IN ORG WORKSPACE === Marker 3: Toggle Unity Catalog (False for Free Edition serverless)
-USE_UNITY_CATALOG = False
+USE_UNITY_CATALOG = True
 
 # === CHANGE IN ORG WORKSPACE === Marker 4: Unity Catalog target catalog and schema
 CATALOG_CONFIG = {
-    "catalog": "main",
-    "schema": "document_lakehouse",
+    "catalog": "ext_cat",
+    "schema": "bronze",
 }
 
 # === CHANGE IN ORG WORKSPACE === Marker 5: Storage landing and bronze paths (Workspace vs Unity Catalog Volume)
 STORAGE_CONFIG = {
-    "landing_path": "/Workspace/Users/shared/document_pipeline/landing",
-    "bronze_path": "/Workspace/Users/shared/document_pipeline/bronze",
+    "landing_path": "/Workspace/Users/jafferali7248@gmail.com/Document_Intelligence_Project/sample_documents/output",
+    "bronze_path": "/Workspace/Users/jafferali7248@gmail.com/Document_Intelligence_Project/sample_documents/bronze_path",
     "use_only_tables": True,  # If True, bypasses landing file write and streams directly into Bronze tables
 }
 
@@ -79,7 +84,7 @@ SECRET_SCOPE_NAME = "document_pipeline_scope"
 # === CHANGE IN ORG WORKSPACE === Marker 7: Source connectors configuration
 SOURCE_CONNECTORS: Dict[str, Dict[str, Any]] = {
     "local": {
-        "path": "/Workspace/Users/shared/sample_json/",
+        "path": "/Workspace/Users/jafferali7248@gmail.com/Document_Intelligence_Project/sample_documents/output",
     },
     "s3": {
         "bucket": "company-document-landing-prod",
@@ -119,6 +124,7 @@ PIPELINE_CONFIG = {
     "backoff_base": 2.0,
     "batch_size": 100,
     "quarantine_on_failed_evaluation": True,
+    "reprocess_all": False,  # Set to True to re-scan landing folder and bypass checkpoints
 }
 
 # ==============================================================================
@@ -145,7 +151,6 @@ print(f"Landing Mode     : {'Table-Direct' if STORAGE_CONFIG['use_only_tables'] 
 # COMMAND ----------
 
 # === CELL 3: DDL (DELTA TABLE DEFINITIONS) ===
-# MAGIC %python
 # Helper to qualify table names based on Unity Catalog setting
 def table_name(tbl: str) -> str:
     if USE_UNITY_CATALOG:
@@ -322,6 +327,84 @@ CREATE TABLE IF NOT EXISTS {table_name("gold_document_summary")} (
 ) USING DELTA
 """)
 
+# 13. bronze_document_chunks (Tracking chunks for large-scale documents)
+spark.sql(f"""
+CREATE TABLE IF NOT EXISTS {table_name("bronze_document_chunks")} (
+    chunk_id STRING,
+    doc_id STRING,
+    sequence INT,
+    page_start INT,
+    page_end INT,
+    chunk_type STRING,
+    status STRING,
+    retry_count INT,
+    checksum STRING,
+    created_at TIMESTAMP
+) USING DELTA
+""")
+
+# 14. silver_logical_tables (Unified multi-page / cross-chunk stitched tables)
+spark.sql(f"""
+CREATE TABLE IF NOT EXISTS {table_name("silver_logical_tables")} (
+    logical_table_id STRING,
+    doc_id STRING,
+    title STRING,
+    page_start INT,
+    page_end INT,
+    total_rows INT,
+    total_cols INT,
+    is_cross_page BOOLEAN,
+    stitch_confidence DOUBLE
+) USING DELTA
+""")
+
+# 15. silver_table_fragments (Physical page-level table fragments)
+spark.sql(f"""
+CREATE TABLE IF NOT EXISTS {table_name("silver_table_fragments")} (
+    table_id STRING,
+    doc_id STRING,
+    page_no INT,
+    logical_table_id STRING,
+    fragment_order INT,
+    n_rows INT,
+    n_cols INT,
+    caption STRING
+) USING DELTA
+""")
+
+# 16. gold_lab_results (Curated clinical laboratory results)
+spark.sql(f"""
+CREATE TABLE IF NOT EXISTS {table_name("gold_lab_results")} (
+    result_id STRING,
+    sample_id STRING,
+    doc_id STRING,
+    source_cell_id STRING,
+    analyte STRING,
+    value_raw STRING,
+    value_num DOUBLE,
+    qualifier STRING,
+    unit STRING,
+    reference_range STRING,
+    flag STRING
+) USING DELTA
+""")
+
+# 17. gold_review_issues (Data quality validation & human-in-the-loop audit trail)
+spark.sql(f"""
+CREATE TABLE IF NOT EXISTS {table_name("gold_review_issues")} (
+    issue_id STRING,
+    doc_id STRING,
+    cell_id STRING,
+    logical_table_id STRING,
+    issue_type STRING,
+    status STRING,
+    severity STRING,
+    raw_evidence STRING,
+    resolved_value STRING,
+    created_at TIMESTAMP
+) USING DELTA
+""")
+
 print("All Delta tables verified or created successfully.")
 
 # COMMAND ----------
@@ -453,7 +536,6 @@ print("Helper functions compiled successfully.")
 # COMMAND ----------
 
 # === CELL 5: CONNECTOR S3 ===
-# MAGIC %python
 import time
 from typing import Iterator, Dict, Any, Tuple
 
@@ -538,7 +620,7 @@ class S3Connector:
 # COMMAND ----------
 
 # === CELL 6: CONNECTOR BLOB ===
-# MAGIC %python
+
 class AzureBlobConnector:
     """
     Azure Blob Storage Source Connector.
@@ -590,7 +672,7 @@ class AzureBlobConnector:
 # COMMAND ----------
 
 # === CELL 7: CONNECTOR ADLS ===
-# MAGIC %python
+
 class ADLSGen2Connector:
     """
     Azure Data Lake Storage Gen2 Connector.
@@ -635,7 +717,7 @@ class ADLSGen2Connector:
 # COMMAND ----------
 
 # === CELL 8: CONNECTOR SFTP ===
-# MAGIC %python
+
 class SFTPConnector:
     """
     SFTP Source Connector.
@@ -681,7 +763,7 @@ class SFTPConnector:
 # COMMAND ----------
 
 # === CELL 9: CONNECTOR LOCAL ===
-# MAGIC %python
+
 import os
 from pathlib import Path
 from typing import Iterator, Dict, Any, Tuple
@@ -701,12 +783,9 @@ class LocalWorkspaceConnector:
             print(f"[WARN] Local path '{base_path}' does not exist. No files found.")
             return
 
-        last_key = checkpoint.get("last_key") if checkpoint else None
         all_files = sorted([p for p in base_path.iterdir() if p.is_file()], key=lambda p: p.name)
 
         for p in all_files:
-            if last_key and p.name <= last_key:
-                continue
             st = p.stat()
             yield {
                 "key": p.name,
@@ -729,7 +808,7 @@ print("All 5 source connectors compiled successfully.")
 # COMMAND ----------
 
 # === CELL 10: SOURCE DISPATCHER ===
-# MAGIC %python
+
 def get_active_checkpoint(source_type: str) -> Optional[Dict[str, Any]]:
     """Retrieves last recorded checkpoint for given source."""
     try:
@@ -817,7 +896,7 @@ print(f"Successfully landed {len(landed_objects)} objects.")
 # COMMAND ----------
 
 # === CELL 11: SOURCE-TYPE GUARD ===
-# MAGIC %python
+
 valid_json_payloads = []
 
 for obj in landed_objects:
@@ -875,7 +954,7 @@ print(f"Source-Type Guard: {len(valid_json_payloads)} passed, {len(landed_object
 # COMMAND ----------
 
 # === CELL 12: BRONZE INGESTION ===
-# MAGIC %python
+
 raw_engine_schema = StructType([
     StructField("doc_id", StringType(), False),
     StructField("content_hash", StringType(), False),
@@ -912,39 +991,53 @@ for item in valid_json_payloads:
 
     # Check bronze_document_registry for idempotency / redelivery
     df_reg = spark.table(table_name("bronze_document_registry")).filter(f"content_hash = '{c_hash}'")
-    
-    if df_reg.count() > 0:
-        # Redelivery: duplicate content already ingested
+    is_redelivery = (df_reg.count() > 0)
+
+    if is_redelivery:
         log_event(run_id=PIPELINE_RUN_ID, doc_id=d_id, stage="BRONZE_INGESTION",
                   status="REDELIVERY", metadata={"source": source, "content_hash": c_hash})
-        print(f"[IDEMPOTENCY] Document {d_id} is a REDELIVERY. Skipping Bronze duplicate write.")
-        continue
+        print(f"[IDEMPOTENCY] Document {d_id} is a REDELIVERY. Skipping Bronze raw write, forwarding to Silver/Gold.")
 
-    # Register as NEW
-    reg_row = [(d_id, c_hash, now, "NEW", parsed.get("source_file"))]
-    df_new_reg = spark.createDataFrame(reg_row, schema=registry_schema)
-    df_new_reg.write.format("delta").mode("append").saveAsTable(table_name("bronze_document_registry"))
+    # Extract metadata and detect engine
+    if "analyzeResult" in parsed:
+        engine = "adi"
+        ar = parsed.get("analyzeResult", {})
+        model_version = ar.get("modelId") or ar.get("apiVersion", "adi-v1")
+    elif "engine" in parsed:
+        engine = parsed.get("engine")
+        model_version = parsed.get("model_version", "local-v1")
+    elif isinstance(parsed, list) or "elements" in parsed:
+        engine = "unstructured"
+        model_version = "unstructured-v1"
+    else:
+        engine = "unknown"
+        model_version = "v1"
 
-    # Extract metadata
-    engine = parsed.get("engine", "unknown")
-    model_version = parsed.get("model_version", "unknown")
+    source_file_name = parsed.get("source_file") or Path(source).name
     segment_id = parsed.get("segment_id")
     page_range = parsed.get("page_range")
 
-    new_bronze_rows.append((
-        d_id, c_hash, source, engine, model_version,
-        segment_id, page_range, raw_str, now, PIPELINE_RUN_ID
-    ))
+    if not is_redelivery:
+        # Register as NEW
+        reg_row = [(d_id, c_hash, now, "NEW", source_file_name)]
+        df_new_reg = spark.createDataFrame(reg_row, schema=registry_schema)
+        df_new_reg.write.format("delta").mode("append").saveAsTable(table_name("bronze_document_registry"))
 
+        new_bronze_rows.append((
+            d_id, c_hash, source, engine, model_version,
+            segment_id, page_range, raw_str, now, PIPELINE_RUN_ID
+        ))
+        log_event(run_id=PIPELINE_RUN_ID, doc_id=d_id, stage="BRONZE_INGESTION",
+                  status="RAW_STORED", metadata={"engine": engine, "model_version": model_version})
+
+    # Add to bronze_ready_docs so Evaluation, Silver parsing, and Gold update cleanly
     bronze_ready_docs.append({
         "doc_id": d_id,
         "content_hash": c_hash,
         "source": source,
         "parsed_json": parsed,
+        "engine": engine,
     })
-
-    log_event(run_id=PIPELINE_RUN_ID, doc_id=d_id, stage="BRONZE_INGESTION",
-              status="RAW_STORED", metadata={"engine": engine, "model_version": model_version})
 
 if new_bronze_rows:
     df_bronze = spark.createDataFrame(new_bronze_rows, schema=raw_engine_schema)
@@ -955,7 +1048,7 @@ print(f"Bronze Ingestion completed: {len(new_bronze_rows)} new documents written
 # COMMAND ----------
 
 # === CELL 13: EVALUATION (COMPLETENESS + QUALITY) ===
-# MAGIC %python
+
 eval_schema = StructType([
     StructField("doc_id", StringType(), False),
     StructField("run_id", StringType(), False),
@@ -976,17 +1069,33 @@ for doc_item in bronze_ready_docs:
     # a) JSON_VALID
     checks.append((d_id, PIPELINE_RUN_ID, "JSON_VALID", "PASS", "Valid JSON object", now))
 
+    # Normalize structure for both ADI and Part A schemas
+    is_adi = "analyzeResult" in data
+    if is_adi:
+        ar = data.get("analyzeResult", {})
+        pages = ar.get("pages", [])
+        elements = ar.get("paragraphs", [])
+        tables = ar.get("tables", [])
+        page_count = len(pages)
+        source_pg_cnt = len(pages)
+        adi_req = ["pages", "paragraphs", "tables"]
+        missing = [s for s in adi_req if s not in ar]
+    else:
+        pages = data.get("pages", [])
+        elements = data.get("elements", [])
+        tables = data.get("tables", [])
+        page_count = data.get("page_count", len(pages))
+        source_pg_cnt = data.get("extraction_metadata", {}).get("page_count_in_source", page_count)
+        req_sections = EVALUATION_CONFIG["required_json_sections"]
+        missing = [s for s in req_sections if s not in data]
+
     # b) REQUIRED_SECTIONS
-    req_sections = EVALUATION_CONFIG["required_json_sections"]
-    missing = [s for s in req_sections if s not in data]
     if missing:
         checks.append((d_id, PIPELINE_RUN_ID, "REQUIRED_SECTIONS", "FAIL", f"Missing sections: {missing}", now))
     else:
         checks.append((d_id, PIPELINE_RUN_ID, "REQUIRED_SECTIONS", "PASS", "All required sections present", now))
 
     # c) PAGE_COUNT_MATCH
-    pages = data.get("pages", [])
-    page_count = data.get("page_count", len(pages))
     if page_count != len(pages):
         checks.append((d_id, PIPELINE_RUN_ID, "PAGE_COUNT_MATCH", "FAIL",
                        f"page_count ({page_count}) does not match len(pages) ({len(pages)})", now))
@@ -1001,7 +1110,6 @@ for doc_item in bronze_ready_docs:
         checks.append((d_id, PIPELINE_RUN_ID, "SEGMENT_COMPLETENESS", "PASS", f"Segment validated", now))
 
     # e) PAGE_COVERAGE
-    source_pg_cnt = data.get("extraction_metadata", {}).get("page_count_in_source")
     if source_pg_cnt and source_pg_cnt > 0:
         coverage = len(pages) / float(source_pg_cnt)
         if coverage < EVALUATION_CONFIG["min_page_coverage"]:
@@ -1011,14 +1119,15 @@ for doc_item in bronze_ready_docs:
             checks.append((d_id, PIPELINE_RUN_ID, "PAGE_COVERAGE", "PASS", f"Coverage: {coverage:.2f}", now))
 
     # f) TABLE_STRUCTURE_VALID
-    tables = data.get("tables", [])
     tbl_err = None
     for tbl in tables:
-        rc = tbl.get("row_count", 0)
-        cc = tbl.get("column_count", 0)
+        rc = tbl.get("rowCount") if tbl.get("rowCount") is not None else tbl.get("row_count", 0)
+        cc = tbl.get("columnCount") if tbl.get("columnCount") is not None else tbl.get("column_count", 0)
         for cell in tbl.get("cells", []):
-            if (cell.get("row_span", 1) > rc and rc > 0) or (cell.get("column_span", 1) > cc and cc > 0):
-                tbl_err = f"Table {tbl.get('table_id')} cell span exceeds dimensions"
+            rs = cell.get("rowSpan") if cell.get("rowSpan") is not None else cell.get("row_span", 1)
+            cs = cell.get("columnSpan") if cell.get("columnSpan") is not None else cell.get("column_span", 1)
+            if (rs > rc and rc > 0) or (cs > cc and cc > 0):
+                tbl_err = f"Table cell span ({rs}x{cs}) exceeds dimensions ({rc}x{cc})"
                 break
         if tbl_err:
             break
@@ -1028,8 +1137,7 @@ for doc_item in bronze_ready_docs:
         checks.append((d_id, PIPELINE_RUN_ID, "TABLE_STRUCTURE_VALID", "PASS", "Table cell spans conform", now))
 
     # g) NON_EMPTY_CONTENT
-    elements = data.get("elements", [])
-    empty_cnt = sum(1 for el in elements if not el.get("text", "").strip())
+    empty_cnt = sum(1 for el in elements if not (el.get("content") if el.get("content") is not None else el.get("text", "")).strip())
     if empty_cnt > 0 and empty_cnt == len(elements):
         checks.append((d_id, PIPELINE_RUN_ID, "NON_EMPTY_CONTENT", "FAIL", "All elements have empty text", now))
     else:
@@ -1062,7 +1170,7 @@ print(f"Evaluation complete: {len(evaluated_docs)} documents passed quality chec
 # COMMAND ----------
 
 # === CELL 14: SILVER PARSING ===
-# MAGIC %python
+
 # MAPPING ADAPTERS: Standardize raw engine JSON outputs into unified Silver rows
 
 def map_local_to_silver(raw: Dict[str, Any], doc_id: str, segment_start_page: int = 1):
@@ -1112,8 +1220,160 @@ def map_local_to_silver(raw: Dict[str, Any], doc_id: str, segment_start_page: in
     return pages_rows, element_rows, table_rows, cell_rows
 
 def map_adi_to_silver(raw: Dict[str, Any], doc_id: str, segment_start_page: int = 1):
-    """Adapter for Azure Document Intelligence (ADI) format."""
-    return map_local_to_silver(raw, doc_id, segment_start_page)
+    """
+    Production adapter for Azure Document Intelligence (ADI v3.0, v3.1, v4.0 / 2024-11-30).
+    Maps analyzeResult.pages, analyzeResult.paragraphs, and analyzeResult.tables into
+    standardized Silver schemas with cross-page table reconstruction.
+    """
+    ar = raw.get("analyzeResult", raw)
+    pages_rows = []
+    element_rows = []
+    table_rows = []
+    cell_rows = []
+
+    # 1. Pages
+    for p in ar.get("pages", []):
+        pg_num = p.get("pageNumber", 1)
+        abs_pg = segment_start_page + (pg_num - 1)
+        width = float(p.get("width")) if p.get("width") is not None else None
+        height = float(p.get("height")) if p.get("height") is not None else None
+        line_cnt = len(p.get("lines", []))
+        is_scanned = False
+        pages_rows.append((
+            doc_id, abs_pg, raw.get("segment_id"), is_scanned,
+            width, height, line_cnt
+        ))
+
+    # 2. Elements (from ADI paragraphs)
+    role_mapping = {
+        "title": "heading",
+        "sectionHeading": "heading",
+        "pageHeader": "header",
+        "pageFooter": "footer",
+        "pageNumber": "page_number",
+        "footnote": "footnote",
+    }
+    paragraphs = ar.get("paragraphs", [])
+    for el_idx, para in enumerate(paragraphs):
+        content = para.get("content", "").strip()
+        role = para.get("role", "text")
+        el_type = role_mapping.get(role, "text")
+
+        br = para.get("boundingRegions", [])
+        pg_num = br[0].get("pageNumber", 1) if br else 1
+        abs_pg = segment_start_page + (pg_num - 1)
+
+        # Extract bounding polygon / bbox [min_x, min_y, max_x, max_y]
+        bbox_json = None
+        if br and "polygon" in br[0]:
+            poly = br[0]["polygon"]
+            if isinstance(poly, list) and len(poly) >= 4:
+                xs = poly[0::2]
+                ys = poly[1::2]
+                bbox_json = json.dumps([round(min(xs), 4), round(min(ys), 4), round(max(xs), 4), round(max(ys), 4)])
+
+        raw_extras = json.dumps({
+            "role": role,
+            "spans": para.get("spans", []),
+        })
+
+        element_rows.append((
+            doc_id, abs_pg, el_idx, el_type, content, bbox_json, 1.0, raw_extras
+        ))
+
+    # 3. Tables & Cross-Page Table Reconstruction
+    raw_tables = ar.get("tables", [])
+    processed_tables = []
+    skip_table_indices = set()
+
+    for t_idx in range(len(raw_tables)):
+        if t_idx in skip_table_indices:
+            continue
+
+        tbl = raw_tables[t_idx]
+        br = tbl.get("boundingRegions", [])
+        pg_nums = [b.get("pageNumber", 1) for b in br] if br else [1]
+        start_pg = min(pg_nums)
+        end_pg = max(pg_nums)
+        rc = tbl.get("rowCount", 0)
+        cc = tbl.get("columnCount", 0)
+        cells = list(tbl.get("cells", []))
+        caption = tbl.get("caption", {}).get("content") if isinstance(tbl.get("caption"), dict) else tbl.get("caption")
+        is_cross = (start_pg != end_pg)
+
+        # Lookahead: Check consecutive tables for cross-page continuation
+        lookahead_idx = t_idx + 1
+        curr_end_pg = end_pg
+        curr_rc = rc
+
+        while lookahead_idx < len(raw_tables):
+            nxt_tbl = raw_tables[lookahead_idx]
+            nxt_br = nxt_tbl.get("boundingRegions", [])
+            nxt_pgs = [b.get("pageNumber", 1) for b in nxt_br] if nxt_br else [1]
+            nxt_start_pg = min(nxt_pgs)
+            nxt_end_pg = max(nxt_pgs)
+            nxt_cc = nxt_tbl.get("columnCount", 0)
+            nxt_rc = nxt_tbl.get("rowCount", 0)
+
+            # Check consecutive page boundary and matching column count
+            if nxt_start_pg == curr_end_pg + 1 and nxt_cc == cc:
+                curr_headers = [c.get("content", "").strip().lower() for c in cells if (c.get("rowIndex") or 0) == 0]
+                nxt_headers = [c.get("content", "").strip().lower() for c in nxt_tbl.get("cells", []) if (c.get("rowIndex") or 0) == 0]
+
+                # Check if headers repeat across page continuation
+                start_r = 1 if (curr_headers and curr_headers == nxt_headers) else 0
+                row_offset = curr_rc
+
+                for c in nxt_tbl.get("cells", []):
+                    c_r = c.get("rowIndex", 0)
+                    if start_r == 1 and c_r == 0:
+                        continue  # skip repeated header
+                    adjusted_r = (c_r - start_r) + row_offset
+                    cells.append({
+                        "rowIndex": adjusted_r,
+                        "columnIndex": c.get("columnIndex", 0),
+                        "rowSpan": c.get("rowSpan", 1),
+                        "columnSpan": c.get("columnSpan", 1),
+                        "content": c.get("content", ""),
+                        "confidence": c.get("confidence", 1.0),
+                    })
+
+                added_rows = nxt_rc - start_r
+                curr_rc += added_rows
+                curr_end_pg = nxt_end_pg
+                is_cross = True
+                skip_table_indices.add(lookahead_idx)
+                lookahead_idx += 1
+            else:
+                break
+
+        t_id = f"tbl_{doc_id}_{t_idx}"
+        processed_tables.append({
+            "table_id": t_id,
+            "start_page": segment_start_page + (start_pg - 1),
+            "end_page": segment_start_page + (curr_end_pg - 1),
+            "is_cross_page": is_cross,
+            "row_count": curr_rc,
+            "column_count": cc,
+            "caption": caption,
+            "cells": cells,
+        })
+
+    for pt in processed_tables:
+        t_id = pt["table_id"]
+        table_rows.append((
+            doc_id, t_id, pt["start_page"], pt["end_page"],
+            pt["is_cross_page"], pt["row_count"], pt["column_count"],
+            pt["caption"], 1.0
+        ))
+        for c in pt["cells"]:
+            cell_rows.append((
+                doc_id, t_id, c.get("rowIndex", 0), c.get("columnIndex", 0),
+                c.get("rowSpan", 1), c.get("columnSpan", 1),
+                c.get("content", ""), float(c.get("confidence", 1.0) or 1.0)
+            ))
+
+    return pages_rows, element_rows, table_rows, cell_rows
 
 def map_unstructured_to_silver(raw: Dict[str, Any], doc_id: str, segment_start_page: int = 1):
     """Adapter for Unstructured SaaS / open-source partition format."""
@@ -1169,7 +1429,16 @@ all_silver_pages, all_silver_elements, all_silver_tables, all_silver_cells = [],
 for doc_item in evaluated_docs:
     d_id = doc_item["doc_id"]
     data = doc_item["parsed_json"]
-    engine = data.get("engine", "local")
+    
+    # Detect engine
+    if "analyzeResult" in data or doc_item.get("engine") == "adi":
+        engine = "adi"
+    elif "engine" in data:
+        engine = data.get("engine")
+    elif isinstance(data, list) or "elements" in data:
+        engine = "unstructured"
+    else:
+        engine = "local"
 
     try:
         if engine == "adi":
@@ -1249,7 +1518,7 @@ print("Silver transformations and MERGE executions completed.")
 # COMMAND ----------
 
 # === CELL 15: GOLD ===
-# MAGIC %python
+
 # Gold Table 1: gold_extracted_table_view (Flat projection of tables and cells)
 spark.sql(f"""
 MERGE INTO {table_name("gold_extracted_table_view")} g
@@ -1265,9 +1534,18 @@ USING (
         c.column_span,
         c.text,
         c.confidence
-    FROM {table_name("silver_table_cells")} c
-    INNER JOIN {table_name("silver_tables")} t
-        ON c.doc_id = t.doc_id AND c.table_id = t.table_id
+    FROM (
+        SELECT doc_id, table_id, row_index, column_index, row_span, column_span, text, confidence,
+               ROW_NUMBER() OVER (PARTITION BY doc_id, table_id, row_index, column_index ORDER BY confidence DESC) as rn
+        FROM {table_name("silver_table_cells")}
+    ) c
+    INNER JOIN (
+        SELECT doc_id, table_id, start_page, end_page,
+               ROW_NUMBER() OVER (PARTITION BY doc_id, table_id ORDER BY start_page ASC) as rn
+        FROM {table_name("silver_tables")}
+    ) t
+        ON c.doc_id = t.doc_id AND c.table_id = t.table_id AND t.rn = 1
+    WHERE c.rn = 1
 ) s
 ON g.doc_id = s.doc_id AND g.table_id = s.table_id AND g.row_index = s.row_index AND g.column_index = s.column_index
 WHEN MATCHED THEN UPDATE SET *
@@ -1288,7 +1566,11 @@ USING (
         CASE WHEN q.doc_id IS NOT NULL THEN 'FAILED' ELSE 'PASSED' END as evaluation_status,
         'COMPLETED' as processing_status,
         current_timestamp() as last_updated
-    FROM {table_name("bronze_raw_engine_output")} b
+    FROM (
+        SELECT doc_id, engine, model_version,
+               ROW_NUMBER() OVER (PARTITION BY doc_id ORDER BY ingested_at DESC) as rn
+        FROM {table_name("bronze_raw_engine_output")}
+    ) b
     LEFT JOIN (
         SELECT doc_id, count(1) as page_cnt, sum(case when is_scanned then 1 else 0 end) as scanned_cnt
         FROM {table_name("silver_pages")}
@@ -1299,7 +1581,11 @@ USING (
         FROM {table_name("silver_tables")}
         GROUP BY doc_id
     ) t ON b.doc_id = t.doc_id
-    LEFT JOIN {table_name("bronze_quarantine")} q ON b.doc_id = q.doc_id
+    LEFT JOIN (
+        SELECT DISTINCT doc_id
+        FROM {table_name("bronze_quarantine")}
+    ) q ON b.doc_id = q.doc_id
+    WHERE b.rn = 1
 ) s
 ON g.doc_id = s.doc_id
 WHEN MATCHED THEN UPDATE SET *
@@ -1311,7 +1597,7 @@ print("Gold layer projections refreshed successfully.")
 # COMMAND ----------
 
 # === CELL 16: RECONCILIATION ===
-# MAGIC %python
+
 # Layer-by-layer count reconciliation audit
 cnt_landed = len(landed_objects)
 cnt_bronze_distinct = spark.table(table_name("bronze_raw_engine_output")).select("doc_id").distinct().count()
@@ -1351,7 +1637,7 @@ else:
 # COMMAND ----------
 
 # === CELL 17: OBSERVABILITY QUERIES ===
-# MAGIC %python
+
 print("--- 1. Document Counts by Pipeline Stage and Status ---")
 display(spark.sql(f"""
 SELECT stage, status, count(1) as event_count
@@ -1362,7 +1648,7 @@ ORDER BY stage, status
 
 # COMMAND ----------
 
-# MAGIC %python
+
 print("--- 2. Quarantined Documents and Root Causes ---")
 display(spark.sql(f"""
 SELECT reason, count(1) as quarantined_count, min(quarantined_at) as first_seen, max(quarantined_at) as last_seen
@@ -1373,7 +1659,7 @@ ORDER BY quarantined_count DESC
 
 # COMMAND ----------
 
-# MAGIC %python
+
 print("--- 3. Evaluation Check Pass/Fail Rates ---")
 display(spark.sql(f"""
 SELECT check_name, status, count(1) as count
@@ -1384,7 +1670,7 @@ ORDER BY check_name, status
 
 # COMMAND ----------
 
-# MAGIC %python
+
 print("--- 4. Full Audit Trail for Recent Document ---")
 sample_doc = spark.table(table_name("gold_document_summary")).select("doc_id").first()
 if sample_doc:
@@ -1399,7 +1685,7 @@ if sample_doc:
 # COMMAND ----------
 
 # === CELL 18: DEMO CELLS ===
-# MAGIC %python
+
 # DEMO 1: DUPLICATE DETECTION (REDELIVERY)
 print("=== DEMO 1: Duplicate Detection ===")
 demo_json = json.dumps({"source_file": "demo_dup.pdf", "engine": "local", "model_version": "v1", "pages": [], "elements": [], "tables": []})
@@ -1419,7 +1705,7 @@ if existing > 0:
 
 # COMMAND ----------
 
-# MAGIC %python
+
 # DEMO 2: QUARANTINE HANDLING FOR CORRUPT & RAW FILES
 print("=== DEMO 2: Quarantine Handling ===")
 # i. Raw PDF slipped through
@@ -1434,7 +1720,7 @@ display(spark.table(table_name("bronze_quarantine")).filter("source LIKE 's3://l
 
 # COMMAND ----------
 
-# MAGIC %python
+
 # DEMO 3: EVALUATION QUALITY GATE FAILURE
 print("=== DEMO 3: Evaluation Gate Failure ===")
 bad_doc_id = "eval_fail_demo_1"
@@ -1448,7 +1734,7 @@ print(f"Document {bad_doc_id} successfully quarantined due to evaluation gate fa
 
 # COMMAND ----------
 
-# MAGIC %python
+
 # DEMO 4: RECONCILIATION GAP DETECTION
 print("=== DEMO 4: Reconciliation Gap Detection ===")
 # Simulate a missing silver write
@@ -1464,13 +1750,14 @@ display(spark.table(table_name("bronze_pipeline_events")).filter("stage = 'RECON
 
 # COMMAND ----------
 
-# === CELL 19: PORTABILITY CHECKLIST (MARKDOWN) ===
 # MAGIC %md
+# MAGIC # === CELL 19: PORTABILITY CHECKLIST (MARKDOWN) ===
+# MAGIC
 # MAGIC ## Portability Checklist: Transitioning from Free Edition to Org Workspace
-# MAGIC 
+# MAGIC
 # MAGIC When promoting this notebook to an enterprise Databricks workspace (e.g. AWS E2, Azure Databricks, GCP),
 # MAGIC execute the following checklist in **Cell 2 (CONFIG)**:
-# MAGIC 
+# MAGIC
 # MAGIC - [ ] **1. Set Environment**:
 # MAGIC   ```python
 # MAGIC   ENV = "ORG_WORKSPACE"

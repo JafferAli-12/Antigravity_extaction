@@ -1,11 +1,16 @@
 # Databricks notebook source
-# === CELL 1: TITLE & WORKFLOW OVERVIEW ===
+# /// script
+# [tool.databricks.environment]
+# environment_version = "6"
+# ///
 # MAGIC %md
+# MAGIC # === CELL 1: TITLE & WORKFLOW OVERVIEW ===
+# MAGIC
 # MAGIC # Document-to-JSON Local Extraction Pipeline (Part A)
-# MAGIC 
+# MAGIC
 # MAGIC This notebook converts raw documents (`.pdf`, `.docx`, `.xlsx`, `.xls`, images, `.json`)
 # MAGIC into standardized, engine-shaped JSON without requiring cloud API keys (e.g. ADI or Unstructured).
-# MAGIC 
+# MAGIC
 # MAGIC ### Features:
 # MAGIC 1. **Zero Cloud Dependencies**: Uses open-source libraries (`pdfplumber`, `PyPDF2`, `openpyxl`, `python-docx`, `Pillow`).
 # MAGIC 2. **Standardized Engine-Shaped JSON**: Mirrors output structure from production engines (pages, elements, tables, figures, metadata).
@@ -18,20 +23,37 @@
 # === CELL 2: CONFIGURATION & WIDGETS ===
 import os
 
+# Dynamically detect current user email to avoid writing to protected /Workspace/Users root
+try:
+    current_user_email = spark.sql("SELECT current_user()").first()[0]
+except Exception:
+    current_user_email = "shared"
+
+default_input_path = f"/Volumes/ext_cat/bronze/vlm"
+default_output_path = f"/Workspace/Users/jafferali7248@gmail.com/Document_Intelligence_Project/sample_documents/output"
+
 # Create widgets for interactive configuration
-dbutils.widgets.text("input_path", "/Workspace/Users/shared/sample_docs", "Input Documents Path")
-dbutils.widgets.text("output_path", "/Workspace/Users/shared/sample_json", "Output JSON Path")
+dbutils.widgets.text("input_path", default_input_path, "Input Documents Path")
+dbutils.widgets.text("output_path", default_output_path, "Output JSON Path")
 dbutils.widgets.dropdown("enable_ocr", "False", ["True", "False"], "Enable OCR Fallback")
 dbutils.widgets.dropdown("overwrite", "False", ["True", "False"], "Overwrite Existing Outputs")
 dbutils.widgets.text("max_file_size_mb", "500", "Max File Size (MB)")
 
 INPUT_PATH = dbutils.widgets.get("input_path")
 OUTPUT_PATH = dbutils.widgets.get("output_path")
+
+# Auto-correct legacy /Workspace/Users/shared if present
+if "/Workspace/Users/shared" in OUTPUT_PATH:
+    corrected_output = OUTPUT_PATH.replace("/Workspace/Users/shared", f"/Workspace/Users/{current_user_email}")
+    print(f"[NOTE] Redirecting protected path '{OUTPUT_PATH}' -> '{corrected_output}'")
+    OUTPUT_PATH = corrected_output
+
 ENABLE_OCR = dbutils.widgets.get("enable_ocr") == "True"
 OVERWRITE = dbutils.widgets.get("overwrite") == "True"
 MAX_FILE_SIZE_MB = int(dbutils.widgets.get("max_file_size_mb"))
 
 print(f"Extraction Configuration:")
+print(f"  Current User     : {current_user_email}")
 print(f"  Input Path       : {INPUT_PATH}")
 print(f"  Output Path      : {OUTPUT_PATH}")
 print(f"  Enable OCR       : {ENABLE_OCR}")
@@ -40,7 +62,8 @@ print(f"  Max File Size MB : {MAX_FILE_SIZE_MB}")
 
 # COMMAND ----------
 
-# === CELL 3: DEPENDENCY INSTALLATION ===
+# MAGIC %skip
+# MAGIC # === CELL 3: DEPENDENCY INSTALLATION ===
 # MAGIC %pip install --quiet pdfplumber pypdf PyPDF2 openpyxl python-docx Pillow pytesseract
 
 # COMMAND ----------
@@ -350,11 +373,85 @@ def extract_docx_nb(file_path: Path) -> Dict[str, Any]:
         }
     }
 
+def extract_image_nb(file_path: Path, enable_ocr: bool) -> Dict[str, Any]:
+    source_name = file_path.name
+    warnings = []
+    try:
+        from PIL import Image
+        with Image.open(file_path) as img:
+            width, height = img.size
+    except Exception as e:
+        return make_failed_json(source_name, "CORRUPT_FILE", f"Invalid or corrupt image: {e}")
+
+    lines, elements = [], []
+    has_text = False
+
+    if enable_ocr:
+        try:
+            import pytesseract
+            with Image.open(file_path) as img:
+                ocr_data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
+            n_boxes = len(ocr_data["text"])
+            el_idx = 0
+            for i in range(n_boxes):
+                txt = ocr_data["text"][i].strip()
+                if txt:
+                    has_text = True
+                    x = float(ocr_data["left"][i])
+                    y = float(ocr_data["top"][i])
+                    w = float(ocr_data["width"][i])
+                    h = float(ocr_data["height"][i])
+                    conf = float(ocr_data["conf"][i]) / 100.0 if ocr_data["conf"][i] >= 0 else None
+                    bbox = [round(x, 2), round(y, 2), round(x + w, 2), round(y + h, 2)]
+                    lines.append({"text": txt, "bbox": bbox, "confidence": conf})
+                    elements.append({
+                        "page_number": 1, "element_index": el_idx, "type": "text",
+                        "text": txt, "bbox": bbox, "confidence": conf
+                    })
+                    el_idx += 1
+        except Exception as ocr_err:
+            warnings.append(f"Image OCR failed: {ocr_err}")
+
+    if not elements:
+        elements.append({
+            "page_number": 1, "element_index": 0, "type": "figure",
+            "text": "Image file (OCR unavailable or disabled)",
+            "bbox": [0.0, 0.0, float(width), float(height)], "confidence": 1.0
+        })
+        warnings.append("OCR was unavailable or disabled; returned image metadata only.")
+
+    return {
+        "status": "SUCCESS", "source_file": source_name, "engine": "local", "model_version": "local-v1",
+        "extracted_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "page_count": 1,
+        "pages": [{"page_number": 1, "width": float(width), "height": float(height), "is_scanned": True, "lines": lines}],
+        "elements": elements, "tables": [],
+        "figures": [{"page_number": 1, "bbox": [0.0, 0.0, float(width), float(height)], "caption": None, "image_ref": source_name}],
+        "extraction_metadata": {
+            "page_count_in_source": 1, "pages_with_text": 1 if has_text else 0, "pages_without_text": 0 if has_text else 1,
+            "tables_detected": 0, "figures_detected": 1, "warnings": warnings
+        }
+    }
+
 # COMMAND ----------
 
 # === CELL 5: BATCH PROCESSING RUNNER ===
 in_path = Path(INPUT_PATH)
 out_path = Path(OUTPUT_PATH)
+
+# Guard against writing to protected workspace root
+if str(out_path).startswith("/Workspace/Users/shared") or str(out_path).rstrip("/") == "/Workspace/Users":
+    raise ValueError(
+        f"Protected directory error: '{out_path}' is protected by Databricks WSFS. "
+        f"Please update the 'output_path' widget in Cell 2 to a path inside your personal user folder "
+        f"(e.g. '/Workspace/Users/{current_user_email}/Document_Intelligence_Project/sample_documents/output') "
+        f"or '/Workspace/Shared/...'"
+    )
+
+try:
+    dbutils.fs.mkdirs(str(out_path))
+except Exception:
+    pass
 out_path.mkdir(parents=True, exist_ok=True)
 log_file_path = out_path / "extraction_log.jsonl"
 
@@ -368,8 +465,18 @@ with open(log_file_path, "a", encoding="utf-8") as log_f:
         start_t = time.time()
         out_f = out_path / f"{f.stem}.json"
         
-        # Idempotency
+        # Idempotency: only skip if previous output was a SUCCESS and up-to-date
+        should_skip = False
         if not OVERWRITE and out_f.exists() and f.stat().st_mtime < out_f.stat().st_mtime:
+            try:
+                with open(out_f, "r", encoding="utf-8") as jf_prev:
+                    prev_json = json.load(jf_prev)
+                if prev_json.get("status") == "SUCCESS":
+                    should_skip = True
+            except Exception:
+                should_skip = False
+
+        if should_skip:
             continue
             
         # Size checks
@@ -386,6 +493,8 @@ with open(log_file_path, "a", encoding="utf-8") as log_f:
                 res = extract_excel_nb(f)
             elif ext == ".docx":
                 res = extract_docx_nb(f)
+            elif ext in [".png", ".jpg", ".jpeg", ".tif", ".tiff"]:
+                res = extract_image_nb(f, ENABLE_OCR)
             elif ext == ".json":
                 try:
                     with open(f, "r", encoding="utf-8") as jf:

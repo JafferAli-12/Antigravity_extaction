@@ -938,19 +938,31 @@ def process_single_file(
     output_file = output_dir / f"{file_path.stem}.json"
     max_mb = config.get("max_file_size_mb", 500)
 
-    # 1. Idempotency check: Skip if output exists and is newer than source
+    # 1. Idempotency check: Skip if output exists, is newer than source, and was a SUCCESS
     if not overwrite and output_file.exists():
         src_mtime = file_path.stat().st_mtime
         out_mtime = output_file.stat().st_mtime
         if src_mtime < out_mtime:
-            logger.info(f"Skipping '{source_name}' (output up-to-date).")
-            return {
-                "source_file": source_name,
-                "output_file": str(output_file),
-                "status": "SKIPPED",
-                "duration_ms": 0,
-                "warnings": ["Output already up-to-date"],
-            }
+            is_prev_success = False
+            try:
+                with open(output_file, "r", encoding="utf-8") as f_prev:
+                    prev_json = json.load(f_prev)
+                if prev_json.get("status") == "SUCCESS":
+                    is_prev_success = True
+            except Exception:
+                is_prev_success = False
+
+            if is_prev_success:
+                logger.info(f"Skipping '{source_name}' (successful output up-to-date).")
+                return {
+                    "source_file": source_name,
+                    "output_file": str(output_file),
+                    "status": "SKIPPED",
+                    "duration_ms": 0,
+                    "warnings": ["Output already up-to-date"],
+                }
+            else:
+                logger.info(f"Re-extracting '{source_name}' because previous output was FAILED or corrupt.")
 
     # 2. File size checks
     try:
