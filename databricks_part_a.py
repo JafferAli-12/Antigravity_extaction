@@ -29,8 +29,8 @@ try:
 except Exception:
     current_user_email = "shared"
 
-default_input_path = f"/Workspace/Users/{current_user_email}/sample_docs"
-default_output_path = f"/Workspace/Users/{current_user_email}/Document_Intelligence_Project/sample_documents/output"
+default_input_path = f"/Volumes/ext_cat/bronze/vlm"
+default_output_path = f"/Workspace/Users/jafferali7248@gmail.com/Document_Intelligence_Project/sample_documents/output"
 
 # Create widgets for interactive configuration
 dbutils.widgets.text("input_path", default_input_path, "Input Documents Path")
