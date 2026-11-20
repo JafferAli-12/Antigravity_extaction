@@ -62,9 +62,8 @@ print(f"  Max File Size MB : {MAX_FILE_SIZE_MB}")
 
 # COMMAND ----------
 
-# MAGIC %skip
-# MAGIC # === CELL 3: DEPENDENCY INSTALLATION ===
-# MAGIC %pip install --quiet pdfplumber pypdf PyPDF2 openpyxl python-docx Pillow pytesseract
+# === CELL 3: DEPENDENCY INSTALLATION ===
+%pip install --quiet pdfplumber pypdf PyPDF2 openpyxl python-docx Pillow pytesseract
 
 # COMMAND ----------
 
@@ -164,6 +163,8 @@ def extract_pdf_nb(file_path: Path, enable_ocr: bool) -> Dict[str, Any]:
         reader = pypdf.PdfReader(str(file_path))
         if reader.is_encrypted:
             return make_failed_json(source_name, "ENCRYPTED_PDF", "PDF is encrypted/password-protected.")
+    except ImportError:
+        pass
     except Exception as e:
         err_str = str(e).lower()
         if "encrypted" in err_str or "password" in err_str:
@@ -172,6 +173,14 @@ def extract_pdf_nb(file_path: Path, enable_ocr: bool) -> Dict[str, Any]:
 
     try:
         import pdfplumber
+    except ImportError:
+        return make_failed_json(
+            source_name,
+            "MISSING_DEPENDENCY",
+            "Missing required library 'pdfplumber'. Please execute Cell 3 (%pip install pdfplumber pypdf) on this cluster."
+        )
+
+    try:
         pages_output, elements_output, tables_output, figures_output = [], [], [], []
         pages_with_text, pages_without_text = 0, 0
 
@@ -520,6 +529,7 @@ with open(log_file_path, "a", encoding="utf-8") as log_f:
             "status": status,
             "duration_ms": dur_ms,
             "error_class": res.get("error_class"),
+            "error_message": res.get("error_message"),
             "warnings": res.get("extraction_metadata", {}).get("warnings", [])
         }
         log_f.write(json.dumps(log_entry) + "\n")
