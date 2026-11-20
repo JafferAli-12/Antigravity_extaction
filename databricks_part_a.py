@@ -23,20 +23,37 @@
 # === CELL 2: CONFIGURATION & WIDGETS ===
 import os
 
+# Dynamically detect current user email to avoid writing to protected /Workspace/Users root
+try:
+    current_user_email = spark.sql("SELECT current_user()").first()[0]
+except Exception:
+    current_user_email = "shared"
+
+default_input_path = f"/Workspace/Users/{current_user_email}/sample_docs"
+default_output_path = f"/Workspace/Users/{current_user_email}/Document_Intelligence_Project/sample_documents/output"
+
 # Create widgets for interactive configuration
-dbutils.widgets.text("input_path", "/Workspace/Users/shared/sample_docs", "Input Documents Path")
-dbutils.widgets.text("output_path", "/Workspace/Users/shared/sample_json", "Output JSON Path")
+dbutils.widgets.text("input_path", default_input_path, "Input Documents Path")
+dbutils.widgets.text("output_path", default_output_path, "Output JSON Path")
 dbutils.widgets.dropdown("enable_ocr", "False", ["True", "False"], "Enable OCR Fallback")
 dbutils.widgets.dropdown("overwrite", "False", ["True", "False"], "Overwrite Existing Outputs")
 dbutils.widgets.text("max_file_size_mb", "500", "Max File Size (MB)")
 
 INPUT_PATH = dbutils.widgets.get("input_path")
 OUTPUT_PATH = dbutils.widgets.get("output_path")
+
+# Auto-correct legacy /Workspace/Users/shared if present
+if "/Workspace/Users/shared" in OUTPUT_PATH:
+    corrected_output = OUTPUT_PATH.replace("/Workspace/Users/shared", f"/Workspace/Users/{current_user_email}")
+    print(f"[NOTE] Redirecting protected path '{OUTPUT_PATH}' -> '{corrected_output}'")
+    OUTPUT_PATH = corrected_output
+
 ENABLE_OCR = dbutils.widgets.get("enable_ocr") == "True"
 OVERWRITE = dbutils.widgets.get("overwrite") == "True"
 MAX_FILE_SIZE_MB = int(dbutils.widgets.get("max_file_size_mb"))
 
 print(f"Extraction Configuration:")
+print(f"  Current User     : {current_user_email}")
 print(f"  Input Path       : {INPUT_PATH}")
 print(f"  Output Path      : {OUTPUT_PATH}")
 print(f"  Enable OCR       : {ENABLE_OCR}")
@@ -421,6 +438,20 @@ def extract_image_nb(file_path: Path, enable_ocr: bool) -> Dict[str, Any]:
 # === CELL 5: BATCH PROCESSING RUNNER ===
 in_path = Path(INPUT_PATH)
 out_path = Path(OUTPUT_PATH)
+
+# Guard against writing to protected workspace root
+if str(out_path).startswith("/Workspace/Users/shared") or str(out_path).rstrip("/") == "/Workspace/Users":
+    raise ValueError(
+        f"Protected directory error: '{out_path}' is protected by Databricks WSFS. "
+        f"Please update the 'output_path' widget in Cell 2 to a path inside your personal user folder "
+        f"(e.g. '/Workspace/Users/{current_user_email}/Document_Intelligence_Project/sample_documents/output') "
+        f"or '/Workspace/Shared/...'"
+    )
+
+try:
+    dbutils.fs.mkdirs(str(out_path))
+except Exception:
+    pass
 out_path.mkdir(parents=True, exist_ok=True)
 log_file_path = out_path / "extraction_log.jsonl"
 
