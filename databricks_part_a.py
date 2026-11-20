@@ -62,6 +62,12 @@ print(f"  Max File Size MB : {MAX_FILE_SIZE_MB}")
 
 # COMMAND ----------
 
+# MAGIC %sh
+# MAGIC # Optional: Install Tesseract OCR Linux system binary for local image/scanned OCR
+# MAGIC which tesseract || (apt-get update -qq && apt-get install -y -qq tesseract-ocr)
+
+# COMMAND ----------
+
 # === CELL 3: DEPENDENCY INSTALLATION ===
 %pip install --quiet pdfplumber pypdf PyPDF2 openpyxl python-docx Pillow pytesseract
 
@@ -553,7 +559,35 @@ with open(log_file_path, "a", encoding="utf-8") as log_f:
         else:
             ext = f.suffix.lower()
             if ext == ".pdf":
-                res = extract_pdf_nb(f, ENABLE_OCR)
+                # Check for large document (> 100 pages) and use intelligent chunking
+                try:
+                    from chunker import IntelligentChunker
+                    from aggregator import DocumentAggregator
+                    chunker = IntelligentChunker(preferred_chunk_size=100, max_chunk_size=200)
+                    chunks_tmp = out_path / "chunks" / f.stem
+                    manifest = chunker.create_chunks(f, chunks_tmp)
+                    if manifest.total_chunks > 1:
+                        print(f"[CHUNKING] Large document '{f.name}' ({manifest.total_pages} pages) -> {manifest.total_chunks} chunks.")
+                        chunk_results = []
+                        for chk in manifest.chunks:
+                            chk_res = extract_pdf_nb(Path(chk.chunk_file_path), ENABLE_OCR)
+                            chk_res["chunk_id"] = chk.chunk_id
+                            chunk_results.append(chk_res)
+                        agg_doc = DocumentAggregator.aggregate_from_chunks(manifest, chunk_results, source_uri=str(f))
+                        res = agg_doc.to_dict()
+                        res["status"] = agg_doc.document.status
+                        res["source_file"] = f.name
+                        res["page_count"] = agg_doc.document.page_count
+                        res["engine"] = "local"
+                        res["model_version"] = "local-v1"
+                        res["tables"] = [lt.to_dict() for lt in agg_doc.logical_tables]
+                        res["elements"] = [p.to_dict() for p in agg_doc.paragraphs]
+                        res["pages"] = [p.to_dict() for p in agg_doc.pages]
+                    else:
+                        res = extract_pdf_nb(f, ENABLE_OCR)
+                except Exception as chunk_err:
+                    print(f"[NOTE] Extracting directly: {chunk_err}")
+                    res = extract_pdf_nb(f, ENABLE_OCR)
             elif ext in [".xlsx", ".xls"]:
                 res = extract_excel_nb(f)
             elif ext == ".docx":
