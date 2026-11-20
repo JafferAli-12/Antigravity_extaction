@@ -78,9 +78,27 @@ import zipfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+import importlib
+import subprocess
+import sys
 
 logger = logging.getLogger("part_a_extractor")
 logger.setLevel(logging.INFO)
+
+def auto_install_if_missing(package_name: str, import_name: Optional[str] = None):
+    """Safely loads or auto-installs missing libraries on the fly."""
+    import_name = import_name or package_name
+    try:
+        return importlib.import_module(import_name)
+    except ImportError:
+        try:
+            print(f"[AUTO-INSTALL] Installing missing dependency '{package_name}' on the cluster...")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", package_name])
+            importlib.invalidate_caches()
+            return importlib.import_module(import_name)
+        except Exception as e:
+            print(f"[WARN] Auto-install failed for '{package_name}': {e}")
+            return None
 
 SUPPORTED_EXTENSIONS = {
     ".pdf": "PDF",
@@ -158,26 +176,26 @@ def detect_and_merge_cross_page_tables(tables: List[Dict[str, Any]], warnings: L
 def extract_pdf_nb(file_path: Path, enable_ocr: bool) -> Dict[str, Any]:
     source_name = file_path.name
     warnings = []
-    try:
-        import pypdf
-        reader = pypdf.PdfReader(str(file_path))
-        if reader.is_encrypted:
-            return make_failed_json(source_name, "ENCRYPTED_PDF", "PDF is encrypted/password-protected.")
-    except ImportError:
-        pass
-    except Exception as e:
-        err_str = str(e).lower()
-        if "encrypted" in err_str or "password" in err_str:
-            return make_failed_json(source_name, "ENCRYPTED_PDF", str(e))
-        return make_failed_json(source_name, "CORRUPT_FILE", f"PDF header parse failed: {e}")
+    
+    # Check encryption via pypdf
+    pypdf = auto_install_if_missing("pypdf")
+    if pypdf:
+        try:
+            reader = pypdf.PdfReader(str(file_path))
+            if reader.is_encrypted:
+                return make_failed_json(source_name, "ENCRYPTED_PDF", "PDF is encrypted/password-protected.")
+        except Exception as e:
+            err_str = str(e).lower()
+            if "encrypted" in err_str or "password" in err_str:
+                return make_failed_json(source_name, "ENCRYPTED_PDF", str(e))
+            return make_failed_json(source_name, "CORRUPT_FILE", f"PDF header parse failed: {e}")
 
-    try:
-        import pdfplumber
-    except ImportError:
+    pdfplumber = auto_install_if_missing("pdfplumber")
+    if pdfplumber is None:
         return make_failed_json(
             source_name,
             "MISSING_DEPENDENCY",
-            "Missing required library 'pdfplumber'. Please execute Cell 3 (%pip install pdfplumber pypdf) on this cluster."
+            "Missing required library 'pdfplumber'. Please run Cell 3 (%pip install pdfplumber pypdf) on this cluster."
         )
 
     try:
@@ -316,8 +334,13 @@ def extract_pdf_nb(file_path: Path, enable_ocr: bool) -> Dict[str, Any]:
 
 def extract_excel_nb(file_path: Path) -> Dict[str, Any]:
     source_name = file_path.name
+    openpyxl = auto_install_if_missing("openpyxl")
+    if openpyxl is None:
+        return make_failed_json(
+            source_name, "MISSING_DEPENDENCY",
+            "Missing required library 'openpyxl'. Please run Cell 3 (%pip install openpyxl)."
+        )
     try:
-        import openpyxl
         wb = openpyxl.load_workbook(str(file_path), data_only=True)
     except Exception as e:
         err = str(e).lower()
@@ -365,8 +388,13 @@ def extract_excel_nb(file_path: Path) -> Dict[str, Any]:
 
 def extract_docx_nb(file_path: Path) -> Dict[str, Any]:
     source_name = file_path.name
+    docx = auto_install_if_missing("python-docx", "docx")
+    if docx is None:
+        return make_failed_json(
+            source_name, "MISSING_DEPENDENCY",
+            "Missing required library 'python-docx'. Please run Cell 3 (%pip install python-docx)."
+        )
     try:
-        import docx
         doc = docx.Document(str(file_path))
     except Exception as e:
         return make_failed_json(source_name, "CORRUPT_FILE", f"DOCX error: {e}")
