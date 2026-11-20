@@ -216,8 +216,27 @@ def extract_pdf_nb(file_path: Path, enable_ocr: bool) -> Dict[str, Any]:
                             })
 
                 if not text.strip():
+                    is_scanned = True
                     pages_without_text += 1
-                    warnings.append(f"Page {page_num}: no_text_layer_no_ocr")
+                    if enable_ocr:
+                        try:
+                            import pytesseract
+                            img = page.to_image(resolution=150).original
+                            ocr_text = pytesseract.image_to_string(img).strip()
+                            if ocr_text:
+                                text = ocr_text
+                                lines.append({
+                                    "text": text,
+                                    "bbox": [0.0, 0.0, float(width or 0), float(height or 0)],
+                                    "confidence": 0.85,
+                                })
+                                pages_with_text += 1
+                                pages_without_text -= 1
+                        except Exception as ocr_err:
+                            warnings.append(f"Page {page_num}: OCR attempt failed: {ocr_err}")
+
+                    if not text.strip():
+                        warnings.append(f"Page {page_num}: no_text_layer_no_ocr")
                 else:
                     pages_with_text += 1
 
@@ -260,12 +279,21 @@ def extract_pdf_nb(file_path: Path, enable_ocr: bool) -> Dict[str, Any]:
                     warnings.append(f"Page {page_num} table error: {te}")
 
                 # Elements from lines
-                for l in lines:
-                    is_h = len(l["text"]) < 80 and (l["text"].isupper() or l["text"].lower().startswith("section"))
+                if lines:
+                    for l in lines:
+                        is_h = len(l["text"]) < 80 and (l["text"].isupper() or l["text"].lower().startswith("section"))
+                        elements_output.append({
+                            "page_number": page_num, "element_index": element_idx,
+                            "type": "heading" if is_h else "text", "text": l["text"],
+                            "bbox": l["bbox"], "confidence": l.get("confidence", 1.0)
+                        })
+                        element_idx += 1
+                else:
                     elements_output.append({
                         "page_number": page_num, "element_index": element_idx,
-                        "type": "heading" if is_h else "text", "text": l["text"],
-                        "bbox": l["bbox"], "confidence": l.get("confidence", 1.0)
+                        "type": "scanned_page",
+                        "text": f"Scanned page without embedded text layer (OCR disabled). Dimensions: {width}x{height}",
+                        "bbox": [0.0, 0.0, float(width or 0), float(height or 0)], "confidence": 1.0
                     })
                     element_idx += 1
 
