@@ -280,12 +280,16 @@ def extract_pdf(
                 return make_failed_json(source_name, "ENCRYPTED_PDF", "PDF file is encrypted or password-protected.")
             page_count_reader = len(reader.pages)
         except ImportError:
-            import PyPDF2
-            with open(file_path, "rb") as f:
-                reader = PyPDF2.PdfReader(f)
-                if reader.is_encrypted:
-                    return make_failed_json(source_name, "ENCRYPTED_PDF", "PDF file is encrypted or password-protected.")
-                page_count_reader = len(reader.pages)
+            try:
+                import PyPDF2
+                with open(file_path, "rb") as f:
+                    reader = PyPDF2.PdfReader(f)
+                    if reader.is_encrypted:
+                        return make_failed_json(source_name, "ENCRYPTED_PDF", "PDF file is encrypted or password-protected.")
+                    page_count_reader = len(reader.pages)
+            except ImportError:
+                # If neither is installed, proceed to pdfplumber
+                pass
     except Exception as e:
         err_msg = str(e).lower()
         if "encrypted" in err_msg or "password" in err_msg:
@@ -296,7 +300,7 @@ def extract_pdf(
     try:
         import pdfplumber
     except ImportError:
-        return make_failed_json(source_name, "UNREADABLE", "pdfplumber is required for PDF extraction.")
+        return make_failed_json(source_name, "MISSING_DEPENDENCY", "pdfplumber is required for PDF extraction. Please install via pip install pdfplumber.")
 
     pages_output: List[Dict[str, Any]] = []
     elements_output: List[Dict[str, Any]] = []

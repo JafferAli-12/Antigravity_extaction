@@ -62,9 +62,14 @@ print(f"  Max File Size MB : {MAX_FILE_SIZE_MB}")
 
 # COMMAND ----------
 
-# MAGIC %skip
-# MAGIC # === CELL 3: DEPENDENCY INSTALLATION ===
-# MAGIC %pip install --quiet pdfplumber pypdf PyPDF2 openpyxl python-docx Pillow pytesseract
+# MAGIC %sh
+# MAGIC # Optional: Install Tesseract OCR Linux system binary for local image/scanned OCR
+# MAGIC which tesseract || (apt-get update -qq && apt-get install -y -qq tesseract-ocr)
+
+# COMMAND ----------
+
+# === CELL 3: DEPENDENCY INSTALLATION ===
+%pip install --quiet pdfplumber pypdf PyPDF2 openpyxl python-docx Pillow pytesseract
 
 # COMMAND ----------
 
@@ -79,9 +84,27 @@ import zipfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+import importlib
+import subprocess
+import sys
 
 logger = logging.getLogger("part_a_extractor")
 logger.setLevel(logging.INFO)
+
+def auto_install_if_missing(package_name: str, import_name: Optional[str] = None):
+    """Safely loads or auto-installs missing libraries on the fly."""
+    import_name = import_name or package_name
+    try:
+        return importlib.import_module(import_name)
+    except ImportError:
+        try:
+            print(f"[AUTO-INSTALL] Installing missing dependency '{package_name}' on the cluster...")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", package_name])
+            importlib.invalidate_caches()
+            return importlib.import_module(import_name)
+        except Exception as e:
+            print(f"[WARN] Auto-install failed for '{package_name}': {e}")
+            return None
 
 SUPPORTED_EXTENSIONS = {
     ".pdf": "PDF",
@@ -159,19 +182,29 @@ def detect_and_merge_cross_page_tables(tables: List[Dict[str, Any]], warnings: L
 def extract_pdf_nb(file_path: Path, enable_ocr: bool) -> Dict[str, Any]:
     source_name = file_path.name
     warnings = []
-    try:
-        import pypdf
-        reader = pypdf.PdfReader(str(file_path))
-        if reader.is_encrypted:
-            return make_failed_json(source_name, "ENCRYPTED_PDF", "PDF is encrypted/password-protected.")
-    except Exception as e:
-        err_str = str(e).lower()
-        if "encrypted" in err_str or "password" in err_str:
-            return make_failed_json(source_name, "ENCRYPTED_PDF", str(e))
-        return make_failed_json(source_name, "CORRUPT_FILE", f"PDF header parse failed: {e}")
+    
+    # Check encryption via pypdf
+    pypdf = auto_install_if_missing("pypdf")
+    if pypdf:
+        try:
+            reader = pypdf.PdfReader(str(file_path))
+            if reader.is_encrypted:
+                return make_failed_json(source_name, "ENCRYPTED_PDF", "PDF is encrypted/password-protected.")
+        except Exception as e:
+            err_str = str(e).lower()
+            if "encrypted" in err_str or "password" in err_str:
+                return make_failed_json(source_name, "ENCRYPTED_PDF", str(e))
+            return make_failed_json(source_name, "CORRUPT_FILE", f"PDF header parse failed: {e}")
+
+    pdfplumber = auto_install_if_missing("pdfplumber")
+    if pdfplumber is None:
+        return make_failed_json(
+            source_name,
+            "MISSING_DEPENDENCY",
+            "Missing required library 'pdfplumber'. Please run Cell 3 (%pip install pdfplumber pypdf) on this cluster."
+        )
 
     try:
-        import pdfplumber
         pages_output, elements_output, tables_output, figures_output = [], [], [], []
         pages_with_text, pages_without_text = 0, 0
 
@@ -207,8 +240,27 @@ def extract_pdf_nb(file_path: Path, enable_ocr: bool) -> Dict[str, Any]:
                             })
 
                 if not text.strip():
+                    is_scanned = True
                     pages_without_text += 1
-                    warnings.append(f"Page {page_num}: no_text_layer_no_ocr")
+                    if enable_ocr:
+                        try:
+                            import pytesseract
+                            img = page.to_image(resolution=150).original
+                            ocr_text = pytesseract.image_to_string(img).strip()
+                            if ocr_text:
+                                text = ocr_text
+                                lines.append({
+                                    "text": text,
+                                    "bbox": [0.0, 0.0, float(width or 0), float(height or 0)],
+                                    "confidence": 0.85,
+                                })
+                                pages_with_text += 1
+                                pages_without_text -= 1
+                        except Exception as ocr_err:
+                            warnings.append(f"Page {page_num}: OCR attempt failed: {ocr_err}")
+
+                    if not text.strip():
+                        warnings.append(f"Page {page_num}: no_text_layer_no_ocr")
                 else:
                     pages_with_text += 1
 
@@ -251,12 +303,21 @@ def extract_pdf_nb(file_path: Path, enable_ocr: bool) -> Dict[str, Any]:
                     warnings.append(f"Page {page_num} table error: {te}")
 
                 # Elements from lines
-                for l in lines:
-                    is_h = len(l["text"]) < 80 and (l["text"].isupper() or l["text"].lower().startswith("section"))
+                if lines:
+                    for l in lines:
+                        is_h = len(l["text"]) < 80 and (l["text"].isupper() or l["text"].lower().startswith("section"))
+                        elements_output.append({
+                            "page_number": page_num, "element_index": element_idx,
+                            "type": "heading" if is_h else "text", "text": l["text"],
+                            "bbox": l["bbox"], "confidence": l.get("confidence", 1.0)
+                        })
+                        element_idx += 1
+                else:
                     elements_output.append({
                         "page_number": page_num, "element_index": element_idx,
-                        "type": "heading" if is_h else "text", "text": l["text"],
-                        "bbox": l["bbox"], "confidence": l.get("confidence", 1.0)
+                        "type": "scanned_page",
+                        "text": f"Scanned page without embedded text layer (OCR disabled). Dimensions: {width}x{height}",
+                        "bbox": [0.0, 0.0, float(width or 0), float(height or 0)], "confidence": 1.0
                     })
                     element_idx += 1
 
@@ -279,8 +340,13 @@ def extract_pdf_nb(file_path: Path, enable_ocr: bool) -> Dict[str, Any]:
 
 def extract_excel_nb(file_path: Path) -> Dict[str, Any]:
     source_name = file_path.name
+    openpyxl = auto_install_if_missing("openpyxl")
+    if openpyxl is None:
+        return make_failed_json(
+            source_name, "MISSING_DEPENDENCY",
+            "Missing required library 'openpyxl'. Please run Cell 3 (%pip install openpyxl)."
+        )
     try:
-        import openpyxl
         wb = openpyxl.load_workbook(str(file_path), data_only=True)
     except Exception as e:
         err = str(e).lower()
@@ -328,8 +394,13 @@ def extract_excel_nb(file_path: Path) -> Dict[str, Any]:
 
 def extract_docx_nb(file_path: Path) -> Dict[str, Any]:
     source_name = file_path.name
+    docx = auto_install_if_missing("python-docx", "docx")
+    if docx is None:
+        return make_failed_json(
+            source_name, "MISSING_DEPENDENCY",
+            "Missing required library 'python-docx'. Please run Cell 3 (%pip install python-docx)."
+        )
     try:
-        import docx
         doc = docx.Document(str(file_path))
     except Exception as e:
         return make_failed_json(source_name, "CORRUPT_FILE", f"DOCX error: {e}")
@@ -488,7 +559,35 @@ with open(log_file_path, "a", encoding="utf-8") as log_f:
         else:
             ext = f.suffix.lower()
             if ext == ".pdf":
-                res = extract_pdf_nb(f, ENABLE_OCR)
+                # Check for large document (> 100 pages) and use intelligent chunking
+                try:
+                    from chunker import IntelligentChunker
+                    from aggregator import DocumentAggregator
+                    chunker = IntelligentChunker(preferred_chunk_size=100, max_chunk_size=200)
+                    chunks_tmp = out_path / "chunks" / f.stem
+                    manifest = chunker.create_chunks(f, chunks_tmp)
+                    if manifest.total_chunks > 1:
+                        print(f"[CHUNKING] Large document '{f.name}' ({manifest.total_pages} pages) -> {manifest.total_chunks} chunks.")
+                        chunk_results = []
+                        for chk in manifest.chunks:
+                            chk_res = extract_pdf_nb(Path(chk.chunk_file_path), ENABLE_OCR)
+                            chk_res["chunk_id"] = chk.chunk_id
+                            chunk_results.append(chk_res)
+                        agg_doc = DocumentAggregator.aggregate_from_chunks(manifest, chunk_results, source_uri=str(f))
+                        res = agg_doc.to_dict()
+                        res["status"] = agg_doc.document.status
+                        res["source_file"] = f.name
+                        res["page_count"] = agg_doc.document.page_count
+                        res["engine"] = "local"
+                        res["model_version"] = "local-v1"
+                        res["tables"] = [lt.to_dict() for lt in agg_doc.logical_tables]
+                        res["elements"] = [p.to_dict() for p in agg_doc.paragraphs]
+                        res["pages"] = [p.to_dict() for p in agg_doc.pages]
+                    else:
+                        res = extract_pdf_nb(f, ENABLE_OCR)
+                except Exception as chunk_err:
+                    print(f"[NOTE] Extracting directly: {chunk_err}")
+                    res = extract_pdf_nb(f, ENABLE_OCR)
             elif ext in [".xlsx", ".xls"]:
                 res = extract_excel_nb(f)
             elif ext == ".docx":
@@ -520,6 +619,7 @@ with open(log_file_path, "a", encoding="utf-8") as log_f:
             "status": status,
             "duration_ms": dur_ms,
             "error_class": res.get("error_class"),
+            "error_message": res.get("error_message"),
             "warnings": res.get("extraction_metadata", {}).get("warnings", [])
         }
         log_f.write(json.dumps(log_entry) + "\n")
