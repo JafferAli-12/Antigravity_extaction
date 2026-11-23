@@ -73,6 +73,41 @@ print(f"  Max File Size MB : {MAX_FILE_SIZE_MB}")
 
 # COMMAND ----------
 
+dbutils.library.restartPython()
+
+# COMMAND ----------
+
+# DBTITLE 1,CELL 3.5: Re-init config after restartPython
+# === CELL 3.5: RE-INIT CONFIG AFTER PYTHON RESTART (required for headless job runs) ===
+# dbutils.library.restartPython() above resets the interpreter, so the plain variables
+# from CELL 2 (INPUT_PATH etc.) no longer exist. Widget values survive the restart, so
+# re-create the variables from the widgets. This cell is a no-op for interactive users
+# who re-run CELL 2 themselves.
+try:
+    current_user_email = spark.sql("SELECT current_user()").first()[0]
+except Exception:
+    current_user_email = "shared"
+
+INPUT_PATH = dbutils.widgets.get("input_path")
+OUTPUT_PATH = dbutils.widgets.get("output_path")
+
+# Auto-correct legacy /Workspace/Users/shared if present (same rule as CELL 2)
+if "/Workspace/Users/shared" in OUTPUT_PATH:
+    corrected_output = OUTPUT_PATH.replace("/Workspace/Users/shared", f"/Workspace/Users/{current_user_email}")
+    print(f"[NOTE] Redirecting protected path '{OUTPUT_PATH}' -> '{corrected_output}'")
+    OUTPUT_PATH = corrected_output
+
+ENABLE_OCR = dbutils.widgets.get("enable_ocr") == "True"
+OVERWRITE = dbutils.widgets.get("overwrite") == "True"
+MAX_FILE_SIZE_MB = int(dbutils.widgets.get("max_file_size_mb"))
+
+print("[OK] Config re-initialized after Python restart:")
+print(f"  Input Path       : {INPUT_PATH}")
+print(f"  Output Path      : {OUTPUT_PATH}")
+print(f"  Enable OCR       : {ENABLE_OCR} | Overwrite: {OVERWRITE} | Max MB: {MAX_FILE_SIZE_MB}")
+
+# COMMAND ----------
+
 # === CELL 4: EXTRACTION CORE ENGINE ===
 import datetime
 import hashlib
